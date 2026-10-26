@@ -102,7 +102,16 @@ def _main(argv: list[str] | None) -> int:
         if not args.report_only:
             jobs = run_floor(args.task, args.work, tuple(args.adversaries.split(",")),
                              tuple(args.root or ["/app"]), attempts=args.attempts)
+        if not jobs.is_dir():
+            raise FileNotFoundError(f"no floor jobs under {jobs}")
         rows = floor_rows(jobs, rubric)
+        requested = (args.adversaries.split(",") if not args.report_only
+                     else [d.name for d in jobs.iterdir() if d.is_dir()])
+        empty = [a for a in requested if a not in {r.adversary for r in rows}]
+        if empty or not any(r.adversary != "oracle" for r in rows):
+            print(f"reward-lens: no graded runs for: {', '.join(empty) or 'any non-solution'} "
+                  f"(check the Harbor logs under {jobs})", file=sys.stderr)
+            return 1
         emit(floor_markdown(rows, rubric), args.out)
         if args.suggest_rubric:
             args.suggest_rubric.write_text(to_toml(diagnose(rows, rubric).suggested))

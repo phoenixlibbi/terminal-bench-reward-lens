@@ -79,6 +79,7 @@ class Diagnosis:
     suggested: Rubric
     worst_before: float
     worst_after: float
+    oracle_after: float | None = None  # mean oracle R under the suggested rubric: must stay 1.0
 
 
 def make_variant(task_dir: Path, adversary: str, out_dir: Path, roots: tuple[str, ...] = ("/app",)) -> Path:
@@ -140,7 +141,7 @@ CHEATERS = ("nop", "zeros", "perturb")
 
 
 def diagnose(rows: list[FloorRow], rubric: Rubric) -> Diagnosis:
-    """Classify every test by which non-solutions pass it, and propose `requires` for weak milestones."""
+    """Classify every test by which non-solutions pass it, and propose conditions for leaking milestones."""
     by_adv = {r.adversary: r for r in rows}
     cheaters = [a for a in CHEATERS if a in by_adv]
     tests = sorted({t for r in rows for res in r.results for t in res})
@@ -158,7 +159,8 @@ def diagnose(rows: list[FloorRow], rubric: Rubric) -> Diagnosis:
     unconditioned = replace(rubric, milestones=tuple(replace(m, requires=(), requires_any=())
                                                      for m in rubric.milestones))
     cheat_runs = [res for a in cheaters for res in by_adv[a].results]
-    raw = [{s.name: s.score for s in milestone_reward(res, unconditioned).milestones} for res in cheat_runs]
+    scored = [milestone_reward(res, unconditioned) for res in cheat_runs]
+    raw = [{s.name: s.score for s in d.milestones} for d in scored if d.failed_gate is None]  # gated runs pay 0
     leaking = [m.name for m in rubric.milestones if any(r[m.name] > 0 for r in raw)]
     safe = [m.name for m in rubric.milestones if m.name not in leaking
             and any(v.owner == m.name and v.verdict.startswith("strong") for v in verdicts)]
@@ -169,7 +171,9 @@ def diagnose(rows: list[FloorRow], rubric: Rubric) -> Diagnosis:
     def worst(r: Rubric) -> float:
         return max((mean(milestone_reward(res, r).reward for res in by_adv[a].results)
                     for a in cheaters if by_adv[a].results), default=0.0)
-    return Diagnosis(verdicts, leaking, safe, suggested, worst(rubric), worst(suggested))
+    oracle_runs = by_adv["oracle"].results if "oracle" in by_adv else []
+    oracle_after = mean(milestone_reward(res, suggested).reward for res in oracle_runs) if oracle_runs else None
+    return Diagnosis(verdicts, leaking, safe, suggested, worst(rubric), worst(suggested), oracle_after)
 
 
 def _verdict(passed_by: dict[str, float | None], is_gate: bool) -> str:
@@ -178,6 +182,8 @@ def _verdict(passed_by: dict[str, float | None], is_gate: bool) -> str:
         return rate is not None and rate > 0
     if "oracle" in passed_by and passed_by["oracle"] is not None and passed_by["oracle"] < 1:
         return "broken: the reference solution fails it"
+    if all(rate is None for a, rate in passed_by.items() if a != "oracle"):
+        return "untested: no non-solution result for this test"
     if is_gate:
         return "integrity gate: expected to pass"
     if passes("nop"):
@@ -236,6 +242,13 @@ def diagnosis_markdown(d: Diagnosis) -> str:
                 out.append(f"  - `{m.name}`: `requires_any = {list(m.requires_any)}`".replace("'", '"'))
         out.append(f"- Worst non-solution milestone R: **{d.worst_before:.2f} -> {d.worst_after:.2f}** "
                    "with these conditions (write the rubric with `--suggest-rubric`).")
+        if d.oracle_after is None:
+            out.append("- Not checked against the reference solution: run the `oracle` adversary too.")
+        elif d.oracle_after < 1.0:
+            out.append(f"- WARNING: the reference solution scores {d.oracle_after:.2f} under these conditions; "
+                       "fix the broken tests first.")
+        else:
+            out.append("- The reference solution still scores 1.00 under these conditions.")
     elif d.leaking_milestones:
         out.append("- No milestone contains a test that every non-solution fails: the verifier cannot tell a correct "
                    "answer from a well-formatted wrong one. Add value checks (see `reward_lens.checks`).")

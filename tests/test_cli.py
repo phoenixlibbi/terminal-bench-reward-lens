@@ -66,3 +66,12 @@ def test_user_errors_are_reported_without_traceback(tmp_path, capsys):
 def test_console_entry_point_runs():
     out = subprocess.run([sys.executable, "-m", "reward_lens.cli", "--version"], capture_output=True, text=True)
     assert out.returncode == 0 and out.stdout.strip()
+
+
+def test_floor_gate_fails_when_an_adversary_produced_no_runs(tmp_path, rubric, capsys):
+    jobs = tmp_path / "work" / "jobs"
+    (jobs / "zeros").mkdir(parents=True)  # Harbor crashed: no trials
+    write_trial(jobs / "oracle", "o", model="x", agent="oracle", tests={"test_schema": "passed", "test_value": "passed"})
+    code = exit_code(["floor", "t", "--rubric", str(rubric), "--work", str(tmp_path / "work"), "--report-only",
+                      "--max-free-credit", "0.1", "--out", str(tmp_path / "f.md")])
+    assert code == 1 and "no graded runs for: zeros" in capsys.readouterr().err

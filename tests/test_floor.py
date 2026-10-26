@@ -213,3 +213,29 @@ def test_mixed_milestone_is_not_safe_to_condition_on(tmp_path):
     d = diagnose(floor_rows(jobs, rubric), rubric)
     assert d.leaking_milestones == ["format", "sanity"] and d.safe_milestones == ["values"]
     assert d.worst_before > 0 and d.worst_after == 0.0
+
+
+def test_untested_when_no_cheater_ran_and_suggestions_are_checked_against_oracle(tmp_path):
+    from reward_lens.floor import diagnose
+    rubric = Rubric("toy", (Milestone("format", 1.0, ("test_schema",)), Milestone("values", 3.0, ("test_value",))))
+    jobs = tmp_path / "jobs"
+    write_trial(jobs / "oracle", "o", model="x", agent="oracle", tests={"test_schema": "passed", "test_value": "passed"})
+    d = diagnose(floor_rows(jobs, rubric), rubric)
+    assert {v.verdict.split(":")[0] for v in d.verdicts} == {"untested"}
+    assert d.safe_milestones == [] and d.suggested == rubric
+
+    write_trial(jobs / "zeros", "z", model="x", agent="oracle", tests={"test_schema": "passed", "test_value": "failed"})
+    d = diagnose(floor_rows(jobs, rubric), rubric)
+    assert d.oracle_after == 1.0 and d.worst_after == 0.0
+    assert "still scores 1.00" in floor_markdown(floor_rows(jobs, rubric), rubric)
+
+
+def test_runs_zeroed_by_a_gate_do_not_count_as_leaking(tmp_path):
+    from reward_lens.floor import diagnose
+    from reward_lens.rubric import Gate
+    rubric = Rubric("toy", (Milestone("format", 1.0, ("test_schema",)), Milestone("values", 1.0, ("test_value",))),
+                    gates=(Gate("integrity", ("test_inputs",)),))
+    jobs = tmp_path / "jobs"
+    write_trial(jobs / "zeros", "z", model="x", agent="oracle",
+                tests={"test_inputs": "failed", "test_schema": "passed", "test_value": "failed"})
+    assert diagnose(floor_rows(jobs, rubric), rubric).leaking_milestones == []
