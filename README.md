@@ -15,7 +15,7 @@ It is a working toolkit for anyone who builds RL environments or evaluations on 
 | `reward-lens regrade` | Re-grade recorded Harbor runs under three rewards; leaderboard, near-misses, rank changes, reward histogram, milestone completion | no / no |
 | `reward-lens convert` | Turn a binary Terminal-Bench task into a dense-reward task (rubric + in-container grader) | no / no |
 | `reward-lens check-rubric` | Statically verify a rubric covers every test exactly once | no / no |
-| `reward-lens floor` | Reward-hacking floor test: run adversarial non-solutions through the real verifier | yes / no |
+| `reward-lens floor` | Reward-hacking floor test: run adversarial non-solutions through the real verifier; weak-test report and suggested rubric fixes | yes / no |
 | `reward-lens sensitivity` | Bootstrap CIs and robustness of model rankings to rubric weights | no / no |
 | `reward-lens run` | Run an agent (replay, LLM loop, oracle, nop) on a converted task and report every reward | yes / optional |
 
@@ -232,6 +232,19 @@ Four adversaries are run through the task's real verifier in Docker, as replacem
 
 `zeros` and `perturb` keep every file, column, row count and ID of a correct answer and none of its values: the cheapest form of "looks right". The report shows the reward each adversary collects under all three rewards and which milestones pay it.
 
+It then diagnoses the verifier, test by test:
+
+| Verdict | Meaning |
+|---|---|
+| `vacuous` | passes even when the agent does nothing |
+| `format-only` | passes for outputs with wrong values (both `zeros` and `perturb`) |
+| `partial` | catches one kind of wrong answer but not the other (e.g. constant outputs but not shuffled ones) |
+| `strong` | every non-solution fails it: real evidence of solving the task |
+| `integrity gate` | expected to pass for anything that does not cheat |
+| `broken` | the reference solution fails it |
+
+Milestones made only of weak tests get a suggested `requires_any` on the milestones that contain strong tests, with the worst non-solution reward before and after the change. `--suggest-rubric fixed.toml` writes the improved rubric, and `--max-free-credit 0.1` turns the whole check into a CI gate.
+
 ### 4. Robustness
 
 ```bash
@@ -263,9 +276,11 @@ The harness is under 400 lines, docstrings included, and has no SDK dependencies
 
 - **`Terminal`** drives a tmux pane through the container's `exec()`. Literal keystrokes travel as base64 → `tmux load-buffer` → `paste-buffer`, so no command can break shell quoting; a keystroke string that is exactly a tmux key name (`C-c`, `Escape`, `Up`) presses that key. After each command it waits the requested duration, then keeps waiting while the screen is still changing.
 - **`ReplayAgent`** re-types the keystrokes of a recorded Harbor (ATIF) trajectory and reports, per test, whether the replayed run ends in the same state as the recording.
-- **`LoopAgent`** follows the Terminus 2 design: the model sees only the screen, replies with a JSON object (`analysis`, `plan`, `commands[{keystrokes, duration}]`, `task_complete`), must confirm completion once, and works with a sliding context window (system prompt + task + last N exchanges). Malformed replies are fed back as errors instead of crashing the run.
+- **`LoopAgent`** follows the Terminus 2 design: the model sees only the screen, replies with a JSON object (`analysis`, `plan`, `commands[{keystrokes, duration}]`, `task_complete`), must confirm completion once, and works with a sliding context window (system prompt + task + last N exchanges). Malformed replies are fed back as errors instead of crashing the run; failed model calls are retried (the run stops after 3 in a row); generation is capped with `max_tokens` and a per-call timeout (`--ak max_tokens=... --ak timeout_sec=...`).
 
-`reward-lens run` converts the task, runs the agent through Harbor and prints every reward plus the per-milestone breakdown.
+`reward-lens run` converts the task (or uses an already converted one), runs the agent through Harbor and prints every reward plus the per-milestone breakdown.
+
+Replay has a second use: **re-verifying old runs against a new verifier.** Point `--agent replay` at a recorded trial and a task whose tests have since been strengthened; the run is rebuilt in a fresh container and graded by the new tests, with no model calls.
 
 ## Writing a good rubric
 
@@ -291,7 +306,15 @@ name = "model_matches_reference"
 weight = 0.70
 tests = ["test_rmse", "test_mae", "test_coverage"]
 scoring = "fraction"            # or "all": 1 only if every test in the milestone passes
+
+[[milestone]]
+name = "reproducible"
+weight = 0.05
+tests = ["test_deterministic"]
+requires_any = ["model_matches_reference"]   # only pays once some value check passes
 ```
+
+`requires = [...]` withholds a milestone's credit unless **every** listed milestone scores above 0; `requires_any = [...]` unless **at least one** does. Conditions use the listed milestones' own test results, so they cannot form loops.
 
 Patterns are globs; without `::` they match the bare test name, and `[params]` suffixes are optional. Every test the verifier reports must belong to exactly one milestone or gate (or be listed in `ignore`); anything else is an error, so no check silently drops out of the reward.
 
@@ -300,8 +323,33 @@ Guidelines:
 1. **Weight by evidence of capability, not by test count.** Files, schemas and determinism are necessary but say almost nothing about whether the task was solved. Keep them at 5–15% combined.
 2. **Make integrity a gate, not a milestone.** Modifying inputs, leaking labels or reading the future should zero the reward, as in Terminal-Bench's integrity criterion. Partial credit for a cheating run is a reward-hacking incentive.
 3. **One milestone per workflow stage.** Milestones should correspond to states a human would recognize as progress (data cleaned → features built → model fitted → calibrated → reported), so `regrade` can show where agents stall.
-4. **Run `floor` before trusting a rubric.** If `zeros` or `perturb` collects meaningful reward, move weight from cheap checks to value checks, or add value checks.
-5. **Run `sensitivity` before trusting a ranking.** If the ranking flips under α = 10, the conclusion depends on your weights rather than on the agents.
+4. **Make cheap credit conditional.** `requires_any` on format and reproducibility milestones means a run earns them only after showing some real progress.
+5. **Run `floor` before trusting a rubric.** If `zeros` or `perturb` collects meaningful reward, follow the weak-test report: reweight, add conditions, or strengthen the tests.
+6. **Run `sensitivity` before trusting a ranking.** If the ranking flips under α = 10, the conclusion depends on your weights rather than on the agents.
+
+### Strengthening the tests themselves
+
+Rubrics can only redistribute the evidence a verifier collects. When the weak-test report shows that a whole stage of the task is checked only by format tests, the verifier needs value checks. [`reward_lens.checks`](reward_lens/checks.py) provides them, standard library only and Python 3.8+ so they run in any task image (`reward-lens convert --with-checks` copies them into `tests/reward_lens_checks.py`):
+
+| Helper | Catches |
+|---|---|
+| `assert_non_degenerate(values, min_unique=10)` | constant outputs ("all zeros") |
+| `assert_strict_intervals(lower, pred, upper)` | empty intervals, which make `lower <= pred <= upper` pass vacuously |
+| `assert_correlated(pred, reference, min_r=0.9)` | values that exist but sit in the wrong rows (shuffled) |
+| `assert_consistent(reported, recomputed)` | reported metrics that do not follow from the submitted predictions |
+
+```python
+from reward_lens_checks import assert_consistent, assert_correlated, rmse
+
+def test_predictions_track_reference():
+    assert_correlated(pred["duration"], reference["duration"], min_r=0.9)
+
+def test_metrics_follow_from_predictions():
+    assert_consistent(json.load(open("/app/output/metrics.json")),
+                      {"rmse": rmse(pred["duration"], truth["y"])})
+```
+
+The strongest pattern of all is to test the agent's code, not its output files: re-run it on hidden inputs and compare with the reference, as Long-Horizon-Terminal-Bench does with its hidden stress tests.
 
 ## Using it as an RL reward
 
@@ -358,6 +406,7 @@ reward_lens/
   convert.py           TB -> dense task converter
   floor.py             reward-hacking floor test
   sensitivity.py       bootstrap CIs, weight sensitivity
+  checks.py            value-check helpers for hardening verifiers
   run.py               run agents on converted tasks
   harness/             tmux terminal, trajectory replay, LLM loop, Harbor agents
   templates/           in-container grader and output corruptor (stdlib, Python 3.8+)
