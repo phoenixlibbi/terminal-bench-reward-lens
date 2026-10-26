@@ -174,9 +174,9 @@ The floor test showed *that* non-solutions collect reward; the weak-test report 
 | Integrity: inputs untouched, no leakage, no future data (3) | the cheater did not cheat on those | integrity gate (correctly passes) |
 | Only the 8 tests that compare values with the reference model failed it | | strong |
 
-Four levels of fixes, measured on the same task. "Real failed runs" are recorded agent runs that did not solve the task; for L3 they were replayed into the hardened task so the new tests could grade them.
+Four levels of fixes, measured on the same task. "Real failed runs" are three recorded agent runs (both models) that did not solve the task, and "passing run" a recorded run that did; for L3 all four were replayed into the hardened task so the new tests could grade them.
 
-| Level | What changes | Cheaters (`zeros` / `perturb`) | Real failed runs | Passing run / oracle |
+| Level | What changes | Cheaters (`zeros` / `perturb`) | 3 real failed runs | Passing run / oracle |
 |---|---|---|---|---|
 | L0: naive dense | every test worth the same | **0.62** / 0.62 | 0.69 | 1.00 |
 | L1: weights + integrity gate | format checks 5–20% of the weight | 0.16 / 0.16 | 0.20–0.27 | 1.00 |
