@@ -158,3 +158,10 @@ def test_standalone_grader_matches_library_on_random_runs(tmp_path, rubric):
 def test_standalone_grader_scores_zero_without_ctrf(tmp_path):
     out = _run_grader(tmp_path, RUBRIC, None, primary="binary")
     assert out == {"reward": 0.0, "binary": 0.0, "naive_dense": 0.0, "milestone": 0.0}
+
+
+def test_convert_with_checks_copies_value_check_helpers(task, tmp_path):
+    out = convert(task, RUBRIC, tmp_path / "out", with_checks=True).out_dir
+    helpers = (out / "tests" / "reward_lens_checks.py").read_text()
+    assert "def assert_correlated" in helpers
+    assert not (convert(task, RUBRIC, tmp_path / "plain").out_dir / "tests" / "reward_lens_checks.py").exists()

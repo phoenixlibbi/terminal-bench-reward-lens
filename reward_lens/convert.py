@@ -102,7 +102,7 @@ def tree_digest(root: Path) -> str:
 
 
 def convert(task_dir: Path, rubric: Rubric, out_dir: Path, primary: str = "milestone",
-            force: bool = False) -> Conversion:
+            force: bool = False, with_checks: bool = False) -> Conversion:
     task_dir, out_dir = task_dir.resolve(), out_dir.resolve()
     if not (task_dir / "tests" / "test.sh").exists():
         raise ValueError(f"{task_dir} is not a Harbor task (no tests/test.sh)")
@@ -125,6 +125,8 @@ def convert(task_dir: Path, rubric: Rubric, out_dir: Path, primary: str = "miles
     (tests / "rubric.json").write_text(json.dumps(to_dict(rubric), indent=2))
     grader = resources.files("reward_lens") / "templates" / "reward_lens_grader.py"
     (tests / "reward_lens_grader.py").write_text(grader.read_text())
+    if with_checks:  # value-check helpers for hardening the task's own tests (import reward_lens_checks)
+        (tests / "reward_lens_checks.py").write_text((resources.files("reward_lens") / "checks.py").read_text())
 
     if tree_digest(task_dir) != digest:
         raise RuntimeError("source task changed during conversion")

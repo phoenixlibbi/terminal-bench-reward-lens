@@ -46,6 +46,8 @@ def _main(argv: list[str] | None) -> int:
     conv.add_argument("--primary", choices=["milestone", "binary", "naive_dense"], default="milestone",
                       help="which reward Harbor reports as 'reward' (all three are always written)")
     conv.add_argument("--force", action="store_true", help="replace --out if it exists")
+    conv.add_argument("--with-checks", action="store_true",
+                      help="also copy reward_lens_checks.py (value-check helpers) into the task's tests/")
 
     check = sub.add_parser("check-rubric", help="statically check that a rubric fits a task's tests")
     check.add_argument("task", type=Path)
@@ -90,7 +92,7 @@ def _main(argv: list[str] | None) -> int:
     elif args.command == "rubric-init":
         print(draft_rubric(args.runs, args.name))
     elif args.command == "convert":
-        result = convert(args.task, load_rubric(args.rubric), args.out, args.primary, args.force)
+        result = convert(args.task, load_rubric(args.rubric), args.out, args.primary, args.force, args.with_checks)
         print(f"converted {len(result.tests)} tests -> {result.out_dir}")
         if result.dropped_lines:
             print("replaced reward-writing lines in test.sh:\n  " + "\n  ".join(result.dropped_lines))
