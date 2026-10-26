@@ -90,6 +90,16 @@ def summarize(model: str, runs: list[Graded], rubric: Rubric) -> ModelSummary:
     )
 
 
+def sanity_problems(report: Report) -> list[str]:
+    """Conditions under which the rubric or the re-grade should not be trusted."""
+    problems = [f"{g.trial.path.name}: oracle scores R={g.dense.reward:.2f}, binary={g.binary:.0f}"
+                for g in report.reference if g.trial.model == "oracle" and (g.dense.reward < 1.0 or g.binary < 1.0)]
+    problems += [f"{g.trial.path.name}: recomputed binary {g.binary:.0f} != verifier reward {g.trial.original_reward}"
+                 for g in report.graded
+                 if g.trial.original_reward is not None and g.binary != g.trial.original_reward]
+    return problems
+
+
 def competition_ranks(values: list[float]) -> list[int]:
     """Rank descending; ties share a rank (1, 2, 2, 4)."""
     return [1 + sum(other > v for other in values) for v in values]

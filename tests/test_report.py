@@ -58,8 +58,10 @@ def test_histogram_buckets_cover_unit_interval():
 def test_cli_regrade_writes_reports(runs, tmp_path):
     rubric = tmp_path / "rubric.toml"
     rubric.write_text('[[milestone]]\nname="all"\nweight=1\ntests=["test_*"]\n')
-    main(["regrade", str(runs), "--rubric", str(rubric),
-          "--out", str(tmp_path / "r.md"), "--json", str(tmp_path / "r.json")])
+    with pytest.raises(SystemExit) as info:
+        main(["regrade", str(runs), "--rubric", str(rubric),
+              "--out", str(tmp_path / "r.md"), "--json", str(tmp_path / "r.json")])
+    assert info.value.code == 0
     assert "Leaderboard" in (tmp_path / "r.md").read_text()
     data = json.loads((tmp_path / "r.json").read_text())
     assert len(data["runs"]) == 5

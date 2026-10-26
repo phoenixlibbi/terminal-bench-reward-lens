@@ -8,13 +8,21 @@ from reward_lens import __version__
 from reward_lens.convert import check_coverage, collect_test_ids, convert
 from reward_lens.floor import ADVERSARIES, floor_markdown, floor_rows, run_floor
 from reward_lens.harbor import find_trials
-from reward_lens.report import build_report, to_json, to_markdown
+from reward_lens.report import build_report, sanity_problems, to_json, to_markdown
 from reward_lens.sensitivity import sensitivity_markdown, weight_sensitivity
-from reward_lens.rubric import load_rubric
+from reward_lens.rubric import RubricError, load_rubric
 from reward_lens.run import AGENTS, parse_kwargs, run_task, summary_markdown
 
 
 def main(argv: list[str] | None = None) -> None:
+    try:
+        sys.exit(_main(argv))
+    except (RubricError, ValueError, FileExistsError, FileNotFoundError, NotADirectoryError) as exc:
+        print(f"reward-lens: error: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+
+def _main(argv: list[str] | None) -> int:
     parser = argparse.ArgumentParser(prog="reward-lens", description=__doc__)
     parser.add_argument("--version", action="version", version=__version__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -24,6 +32,8 @@ def main(argv: list[str] | None = None) -> None:
     regrade.add_argument("--rubric", type=Path, required=True)
     regrade.add_argument("--out", type=Path, help="write the markdown report here instead of stdout")
     regrade.add_argument("--json", type=Path, help="also write per-run and per-model results as JSON")
+    regrade.add_argument("--strict", action="store_true",
+                         help="exit 1 if an oracle run scores below 1.0 or binary disagrees with the verifier")
 
     init = sub.add_parser("rubric-init", help="draft a rubric from the tests seen in Harbor trials")
     init.add_argument("runs", type=Path)
@@ -50,6 +60,8 @@ def main(argv: list[str] | None = None) -> None:
     floor.add_argument("--attempts", type=int, default=1)
     floor.add_argument("--report-only", action="store_true", help="skip Harbor, re-score existing jobs")
     floor.add_argument("--out", type=Path)
+    floor.add_argument("--max-free-credit", type=float,
+                       help="exit 1 if any adversary other than oracle earns milestone R above this (CI gate)")
 
     sens = sub.add_parser("sensitivity", help="bootstrap CIs and robustness of rankings to rubric weights")
     sens.add_argument("runs", type=Path)
@@ -72,7 +84,7 @@ def main(argv: list[str] | None = None) -> None:
 
     args = parser.parse_args(argv)
     if args.command == "regrade":
-        run_regrade(args)
+        return run_regrade(args)
     elif args.command == "rubric-init":
         print(draft_rubric(args.runs, args.name))
     elif args.command == "convert":
@@ -86,7 +98,14 @@ def main(argv: list[str] | None = None) -> None:
         if not args.report_only:
             jobs = run_floor(args.task, args.work, tuple(args.adversaries.split(",")),
                              tuple(args.root or ["/app"]), attempts=args.attempts)
-        emit(floor_markdown(floor_rows(jobs, rubric), rubric), args.out)
+        rows = floor_rows(jobs, rubric)
+        emit(floor_markdown(rows, rubric), args.out)
+        leaks = [r for r in rows if r.adversary != "oracle" and args.max_free_credit is not None
+                 and r.milestone > args.max_free_credit]
+        if leaks:
+            print("reward-lens: free credit above threshold: "
+                  + ", ".join(f"{r.adversary} R={r.milestone:.2f}" for r in leaks), file=sys.stderr)
+            return 1
     elif args.command == "run":
         kwargs = parse_kwargs(args.ak)
         if args.trajectory:
@@ -105,16 +124,22 @@ def main(argv: list[str] | None = None) -> None:
         tests = collect_test_ids(args.task / "tests")
         check_coverage(load_rubric(args.rubric), tests)
         print(f"ok: rubric covers all {len(tests)} tests exactly once")
+    return 0
 
 
-def run_regrade(args: argparse.Namespace) -> None:
+def run_regrade(args: argparse.Namespace) -> int:
     trials = find_trials(args.runs)
     if not trials:
-        sys.exit(f"no Harbor trials found under {args.runs}")
+        raise FileNotFoundError(f"no Harbor trials found under {args.runs}")
     report = build_report(trials, load_rubric(args.rubric))
     emit(to_markdown(report), args.out)
     if args.json:
         args.json.write_text(json.dumps(to_json(report), indent=2))
+    problems = sanity_problems(report)
+    if args.strict and problems:
+        print("reward-lens: sanity check failed:\n  " + "\n  ".join(problems), file=sys.stderr)
+        return 1
+    return 0
 
 
 def emit(text: str, out: Path | None) -> None:

@@ -3,19 +3,27 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "reward-lens"
+name = "terminal-bench-reward-lens"
 version = "0.1.0"
-description = "Grade the same terminal-agent runs under binary and dense milestone verifiers."
+description = "Binary vs. dense milestone rewards for AI agents on Terminal-Bench, Long-Horizon-Terminal-Bench and Harbor tasks: re-grading, task conversion, reward-hacking floor tests and a minimal agent harness for RL, RLHF and evals."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [{ name = "Muhammad Labeeb Tariq" }]
 dependencies = []
-keywords = ["reinforcement-learning", "reward-design", "llm-agents", "benchmarks", "terminal-bench", "harbor"]
+keywords = ["reinforcement-learning", "rlhf", "reward-modeling", "reward-shaping", "reward-hacking", "llm-agents",
+            "agent-evaluation", "evals", "benchmarks", "terminal-bench", "long-horizon", "harbor", "verifiers"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 harness = ["harbor>=0.20"]
 
+[project.urls]
+Homepage = "https://github.com/phoenixlibbi/terminal-bench-reward-lens"
+Issues = "https://github.com/phoenixlibbi/terminal-bench-reward-lens/issues"
+
 [project.scripts]
 reward-lens = "reward_lens.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["reward_lens"]
