@@ -155,7 +155,8 @@ With 10–16 runs per model the binary intervals overlap; the milestone interval
 
 | Check | Result |
 |---|---|
-| Converted Task A and Task B, oracle solution | binary 1, naive dense 1, milestone 1 on both, recorded by Harbor in `reward.json` |
+| Converted Task A and Task B, oracle solution | binary 1, naive dense 1, milestone 1 on both, plus the original verifier's own verdict (1), recorded by Harbor in `reward.json`; all 26 tests captured through pytest's JUnit report with no plugin installed |
+| Rebuilt converter and snapshot-based adversary re-run on Task B | `zeros` reproduces the published numbers exactly (naive dense 0.62, milestone R 0.16) |
 | Recomputed binary reward vs. each run's original `reward.txt` | 54 / 54 runs agree |
 | `ReplayAgent`: recorded passing run, re-typed in a fresh container | reward 1.0, **16 / 16** tests in the same state as the recording |
 | `ReplayAgent`: recorded near-miss run (binary 0, R 0.92) | binary 0, R 0.917, **16 / 16** tests in the same state |
