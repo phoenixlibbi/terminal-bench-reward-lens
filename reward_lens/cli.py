@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from reward_lens import __version__
+from reward_lens.convert import check_coverage, collect_test_ids, convert
 from reward_lens.harbor import find_trials
 from reward_lens.report import build_report, to_json, to_markdown
 from reward_lens.rubric import load_rubric
@@ -25,11 +26,32 @@ def main(argv: list[str] | None = None) -> None:
     init.add_argument("runs", type=Path)
     init.add_argument("--name", default="my-task")
 
+    conv = sub.add_parser("convert", help="turn a binary-reward Harbor task into a dense milestone-reward task")
+    conv.add_argument("task", type=Path, help="source Harbor task directory (only read)")
+    conv.add_argument("--rubric", type=Path, required=True)
+    conv.add_argument("--out", type=Path, required=True, help="where to write the converted task")
+    conv.add_argument("--primary", choices=["milestone", "binary", "naive_dense"], default="milestone",
+                      help="which reward Harbor reports as 'reward' (all three are always written)")
+    conv.add_argument("--force", action="store_true", help="replace --out if it exists")
+
+    check = sub.add_parser("check-rubric", help="statically check that a rubric fits a task's tests")
+    check.add_argument("task", type=Path)
+    check.add_argument("--rubric", type=Path, required=True)
+
     args = parser.parse_args(argv)
     if args.command == "regrade":
         run_regrade(args)
-    else:
+    elif args.command == "rubric-init":
         print(draft_rubric(args.runs, args.name))
+    elif args.command == "convert":
+        result = convert(args.task, load_rubric(args.rubric), args.out, args.primary, args.force)
+        print(f"converted {len(result.tests)} tests -> {result.out_dir}")
+        if result.dropped_lines:
+            print("replaced reward-writing lines in test.sh:\n  " + "\n  ".join(result.dropped_lines))
+    else:
+        tests = collect_test_ids(args.task / "tests")
+        check_coverage(load_rubric(args.rubric), tests)
+        print(f"ok: rubric covers all {len(tests)} tests exactly once")
 
 
 def run_regrade(args: argparse.Namespace) -> None:

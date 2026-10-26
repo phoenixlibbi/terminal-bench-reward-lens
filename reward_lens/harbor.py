@@ -18,6 +18,7 @@ class Trial:
     model: str
     results: dict[str, str]  # test_id -> status; empty if the verifier never wrote ctrf.json
     original_reward: float | None
+    rewards: dict[str, float]  # everything the verifier reported, e.g. binary/naive_dense/milestone
     termination: str  # "exited" | "timeout" | "error"
     n_episodes: int | None
 
@@ -42,7 +43,8 @@ def load_trial(path: Path, result: dict) -> Trial:
         task=result.get("task_name", path.parent.name),
         model=_model_name(agent, path),
         results=load_ctrf(ctrf) if ctrf.exists() else {},
-        original_reward=rewards.get("reward"),
+        original_reward=rewards.get("binary", rewards.get("reward")),
+        rewards=dict(rewards),
         termination=_termination(result.get("exception_info")),
         n_episodes=metadata.get("n_episodes"),
     )

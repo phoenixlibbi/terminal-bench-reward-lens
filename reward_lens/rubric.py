@@ -53,9 +53,22 @@ class RubricError(ValueError):
 
 
 def matches(pattern: str, test_id: str) -> bool:
-    """Glob match. Patterns without '::' match the bare test function name."""
+    """Glob match. Patterns without '::' match the bare test function name; '[params]' suffixes are optional."""
     target = test_id if "::" in pattern else test_id.split("::")[-1]
-    return fnmatchcase(target, pattern)
+    return fnmatchcase(target, pattern) or fnmatchcase(target.split("[")[0], pattern)
+
+
+def to_dict(rubric: Rubric) -> dict:
+    """JSON-serializable form, read by the in-container grader."""
+    return {
+        "name": rubric.name,
+        "pass_threshold": rubric.pass_threshold,
+        "near_miss": rubric.near_miss,
+        "ignore": list(rubric.ignore),
+        "milestones": [{"name": m.name, "weight": m.weight, "tests": list(m.tests), "scoring": m.scoring}
+                       for m in rubric.milestones],
+        "gates": [{"name": g.name, "tests": list(g.tests)} for g in rubric.gates],
+    }
 
 
 def load_rubric(path: str | Path) -> Rubric:
