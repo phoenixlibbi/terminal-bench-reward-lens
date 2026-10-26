@@ -64,16 +64,22 @@ class ChatClient:
 
 
 def parse_reply(text: str, max_duration: float = 60.0) -> Reply:
-    """Parse the agent's JSON reply, tolerating code fences and prose around the object."""
-    match = re.search(r"\{.*\}", re.sub(r"```(?:json)?", "", text), re.DOTALL)
-    if not match:
-        return Reply(error="no JSON object found in your reply")
-    try:
-        data = json.loads(match.group(0))
-    except json.JSONDecodeError as exc:
-        return Reply(error=f"invalid JSON: {exc}")
-    if not isinstance(data, dict):
-        return Reply(error="the reply must be a JSON object")
+    """Parse the first JSON object in the agent's reply, tolerating code fences and prose around it.
+
+    The object is decoded in place (never by stripping fences), so keystrokes may themselves contain ``` lines.
+    """
+    decoder, data, last_error = json.JSONDecoder(), None, "no JSON object found in your reply"
+    for match in re.finditer(r"\{", text):
+        try:
+            candidate, _ = decoder.raw_decode(text, match.start())
+        except json.JSONDecodeError as exc:
+            last_error = f"invalid JSON: {exc}"
+            continue
+        if isinstance(candidate, dict):
+            data = candidate
+            break
+    if data is None:
+        return Reply(error=last_error)
     commands = []
     for c in data.get("commands") or []:
         if not isinstance(c, dict) or not isinstance(c.get("keystrokes"), str):
@@ -83,5 +89,6 @@ def parse_reply(text: str, max_duration: float = 60.0) -> Reply:
         except (TypeError, ValueError):
             duration = 1.0
         commands.append(Command(c["keystrokes"], max(0.0, min(duration, max_duration))))
+    done = data.get("task_complete", False)
     return Reply(str(data.get("analysis", "")), str(data.get("plan", "")), commands,
-                 bool(data.get("task_complete", False)))
+                 done is True or (isinstance(done, str) and done.strip().lower() == "true"))

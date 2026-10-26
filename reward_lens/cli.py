@@ -1,17 +1,19 @@
 import argparse
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 from reward_lens import __version__
 from reward_lens.convert import check_coverage, collect_test_ids, convert
+from reward_lens.ctrf import normalize_name, split_outside_brackets, strip_params
 from reward_lens.floor import ADVERSARIES, diagnose, floor_markdown, floor_rows, run_floor
 from reward_lens.harbor import find_trials
 from reward_lens.report import build_report, sanity_problems, to_json, to_markdown
-from reward_lens.sensitivity import sensitivity_markdown, weight_sensitivity
 from reward_lens.rubric import RubricError, load_rubric, to_toml
 from reward_lens.run import AGENTS, parse_kwargs, run_task, summary_markdown
+from reward_lens.sensitivity import sensitivity_markdown, weight_sensitivity
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -20,6 +22,9 @@ def main(argv: list[str] | None = None) -> None:
     except (RubricError, ValueError, FileExistsError, FileNotFoundError, NotADirectoryError) as exc:
         print(f"reward-lens: error: {exc}", file=sys.stderr)
         sys.exit(2)
+    except subprocess.CalledProcessError as exc:
+        print(f"reward-lens: error: {exc.cmd[0]} failed with exit code {exc.returncode}", file=sys.stderr)
+        sys.exit(3)
 
 
 def _main(argv: list[str] | None) -> int:
@@ -143,10 +148,11 @@ def _main(argv: list[str] | None) -> int:
 
 
 def run_regrade(args: argparse.Namespace) -> int:
+    rubric = load_rubric(args.rubric)  # validate the rubric before touching the runs
     trials = find_trials(args.runs)
     if not trials:
         raise FileNotFoundError(f"no Harbor trials found under {args.runs}")
-    report = build_report(trials, load_rubric(args.rubric))
+    report = build_report(trials, rubric)
     emit(to_markdown(report), args.out)
     if args.json:
         args.json.write_text(json.dumps(to_json(report), indent=2))
@@ -165,12 +171,15 @@ def emit(text: str, out: Path | None) -> None:
 
 
 def draft_rubric(runs: Path, name: str) -> str:
-    """One milestone per test class (or one for module-level tests), equal weights, to be edited by hand."""
+    """One milestone per test class (or one for module-level tests), equal weights, to be edited by hand.
+
+    Parametrized tests are listed once, without their parameters, which matches every parameter set."""
     groups: dict[str, set[str]] = {}
     for trial in find_trials(runs):
         for test in trial.results:
-            cls, _, fn = test.rpartition("::")
-            groups.setdefault(cls or "module_tests", set()).add(test if cls else fn)
+            parts = split_outside_brackets(normalize_name(test))
+            cls, fn = ("::".join(parts[:-1]), parts[-1])
+            groups.setdefault(cls or "module_tests", set()).add(strip_params(test if cls else fn))
     lines = ["[task]", f'name = "{name}"', "pass_threshold = 0.95", "near_miss = 0.75", ""]
     for group, tests in sorted(groups.items()):
         milestone = re.sub(r"(?<!^)(?=[A-Z])", "_", group.removeprefix("Test")).lower()

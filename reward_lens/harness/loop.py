@@ -57,7 +57,8 @@ async def agent_loop(terminal: Terminal, instruction: str, complete: Callable[[l
                      max_failed_calls: int = 3, log_path: Path | None = None) -> LoopResult:
     """Observe -> ask the model -> type its commands, until it confirms completion or runs out of turns.
 
-    Context is a sliding window: the system prompt, the task, and the last `history_turns` exchanges.
+    Context is a sliding window: the system prompt, the task, the last `history_turns` exchanges and the
+    current screen.
     """
     task_message = {"role": "user", "content": f"Task:\n{instruction}\n\nThe terminal is ready."}
     history: list[dict] = []
@@ -66,7 +67,7 @@ async def agent_loop(terminal: Terminal, instruction: str, complete: Callable[[l
         screen = await terminal.screen()
         observation = f"{feedback}Current terminal screen:\n{screen or '(empty)'}"
         history.append({"role": "user", "content": observation})
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}, task_message, *history[-2 * history_turns + 1:]]
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}, task_message, *history[-(2 * history_turns + 1):]]
         try:
             text = await asyncio.to_thread(complete, messages)
         except Exception as exc:  # timeouts, connection errors, server errors: retry, then give up

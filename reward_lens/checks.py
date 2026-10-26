@@ -33,8 +33,7 @@ def _std(xs):
 
 def pearson(x, y):
     xs, ys = _floats(x, "x"), _floats(y, "y")
-    if len(xs) != len(ys):
-        raise AssertionError(f"length mismatch: {len(xs)} vs {len(ys)}")
+    _same_length(x=xs, y=ys)
     sx, sy = _std(xs), _std(ys)
     if sx == 0 or sy == 0:
         return 0.0
@@ -42,13 +41,21 @@ def pearson(x, y):
     return sum((a - mx) * (b - my) for a, b in zip(xs, ys)) / (len(xs) * sx * sy)
 
 
+def _same_length(**columns):
+    lengths = {name: len(values) for name, values in columns.items()}
+    if len(set(lengths.values())) > 1:
+        raise AssertionError("length mismatch: " + ", ".join(f"{k}={v}" for k, v in lengths.items()))
+
+
 def rmse(pred, truth):
     p, t = _floats(pred, "pred"), _floats(truth, "truth")
+    _same_length(pred=p, truth=t)
     return math.sqrt(sum((a - b) ** 2 for a, b in zip(p, t)) / len(p))
 
 
 def mae(pred, truth):
     p, t = _floats(pred, "pred"), _floats(truth, "truth")
+    _same_length(pred=p, truth=t)
     return sum(abs(a - b) for a, b in zip(p, t)) / len(p)
 
 
@@ -65,6 +72,7 @@ def assert_non_degenerate(values, name="values", min_unique=2, min_std=0.0):
 def assert_strict_intervals(lower, pred, upper, min_width=1e-9, name="interval"):
     """lower <= pred <= upper AND upper - lower > min_width for every row."""
     lo, p, hi = _floats(lower, "lower"), _floats(pred, "pred"), _floats(upper, "upper")
+    _same_length(lower=lo, pred=p, upper=hi)
     bad = [i for i, (a, b, c) in enumerate(zip(lo, p, hi)) if not (a <= b <= c and c - a > min_width)]
     if bad:
         raise AssertionError(f"{name}: {len(bad)} of {len(lo)} rows are empty or do not contain the "

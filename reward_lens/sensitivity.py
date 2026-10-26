@@ -26,9 +26,12 @@ class Sensitivity:
 
 
 def dirichlet(alphas: list[float], rng: random.Random) -> list[float]:
-    draws = [rng.gammavariate(a, 1.0) for a in alphas]
-    total = sum(draws)
-    return [d / total for d in draws]
+    for _ in range(100):  # tiny concentrations can underflow every gamma draw to 0: redraw
+        draws = [rng.gammavariate(a, 1.0) for a in alphas]
+        total = sum(draws)
+        if total > 0:
+            return [d / total for d in draws]
+    return [1.0 / len(alphas)] * len(alphas)
 
 
 def reweight(rubric: Rubric, weights: list[float]) -> Rubric:
@@ -48,6 +51,10 @@ def ranking(means: dict[str, float]) -> tuple[str, ...]:
 
 def weight_sensitivity(runs: list[Graded], rubric: Rubric, alpha: float | None = 20.0,
                        samples: int = 500, seed: int = 0) -> Sensitivity:
+    if samples < 1:
+        raise ValueError("samples must be at least 1")
+    if alpha is not None and alpha <= 0:
+        raise ValueError("alpha must be positive")
     rng = random.Random(seed)
     base = [m.weight for m in rubric.milestones]
     total = sum(base)

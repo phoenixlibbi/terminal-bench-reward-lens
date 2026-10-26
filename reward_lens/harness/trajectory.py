@@ -32,7 +32,19 @@ def load_commands(path: str | Path) -> list[Command]:
             name = call.get("function_name") or call.get("name")
             args = call.get("arguments") or {}
             if isinstance(args, str):
-                args = json.loads(args)
+                try:
+                    args = json.loads(args)
+                except ValueError:
+                    args = {"keystrokes": args} if name in KEYSTROKE_TOOLS else {}
+            if not isinstance(args, dict):
+                args = {"keystrokes": args} if isinstance(args, str) and name in KEYSTROKE_TOOLS else {}
             if name in KEYSTROKE_TOOLS or "keystrokes" in args:
-                commands.append(Command(args.get("keystrokes", ""), float(args.get("duration", 1.0))))
+                commands.append(Command(str(args.get("keystrokes") or ""), _duration(args.get("duration"))))
     return commands
+
+
+def _duration(value) -> float:
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return 1.0

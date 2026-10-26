@@ -75,3 +75,40 @@ def test_floor_gate_fails_when_an_adversary_produced_no_runs(tmp_path, rubric, c
     code = exit_code(["floor", "t", "--rubric", str(rubric), "--work", str(tmp_path / "work"), "--report-only",
                       "--max-free-credit", "0.1", "--out", str(tmp_path / "f.md")])
     assert code == 1 and "no graded runs for: zeros" in capsys.readouterr().err
+
+
+def test_rubric_without_weight_is_a_rubric_error(tmp_path, capsys):
+    bad = tmp_path / "r.toml"
+    bad.write_text('[[milestone]]\nname="m"\ntests=["t"]\n')
+    assert exit_code(["regrade", str(tmp_path), "--rubric", str(bad)]) == 2
+    assert "needs name, weight and tests" in capsys.readouterr().err
+
+
+def test_sensitivity_rejects_zero_samples(tmp_path, rubric):
+    write_trial(tmp_path / "runs", "a", model="m", tests={"test_schema": "passed", "test_value": "failed"})
+    assert exit_code(["sensitivity", str(tmp_path / "runs"), "--rubric", str(rubric), "--samples", "0"]) == 2
+
+
+def test_harbor_failure_exits_3(tmp_path, rubric, monkeypatch, capsys):
+    import reward_lens.run as run_module
+
+    def boom(cmd, check):
+        raise subprocess.CalledProcessError(7, cmd)
+    monkeypatch.setattr(run_module.subprocess, "run", boom)
+    task = tmp_path / "task" / "tests"
+    task.mkdir(parents=True)
+    (task / "test.sh").write_text("# --- reward-lens: dense milestone reward (generated) ---\n")
+    assert exit_code(["run", str(tmp_path / "task"), "--rubric", str(rubric), "--work", str(tmp_path / "w")]) == 3
+    assert "failed with exit code 7" in capsys.readouterr().err
+
+
+def test_rubric_init_lists_parametrized_tests_once(tmp_path):
+    from reward_lens.cli import draft_rubric
+    from reward_lens.rubric import load_rubric
+    write_trial(tmp_path, "t", model="m", tests={"test_x[1]": "passed", "test_x[a::b]": "failed", "TestA::test_y[2]": "passed"})
+    path = tmp_path / "draft.toml"
+    path.write_text(draft_rubric(tmp_path, "demo"))
+    rubric = load_rubric(path)
+    assert {m.name: m.tests for m in rubric.milestones} == {"a": ("TestA::test_y",), "module_tests": ("test_x",)}
+    for test in ("test_x[1]", "test_x[a::b]", "TestA::test_y[2]"):
+        rubric.owner(test)

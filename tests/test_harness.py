@@ -20,14 +20,18 @@ class FakeShell:
         self.typed: list[str] = []
         self.commands: list[str] = []
         self.screens = list(screens or [])
+        self._b64 = ""
 
     async def __call__(self, command: str) -> ExecOutput:
         self.commands.append(command)
         if "tmux send-keys" in command:
             self.typed.append(command.split()[-1])
-        elif "base64 -d" in command:
-            payload = re.search(r"printf %s (\S+)", command).group(1)
-            self.typed.append(base64.b64decode(payload).decode())
+            return ExecOutput("", 0)
+        if command.startswith(": >"):
+            self._b64 = ""
+        self._b64 += "".join(re.findall(r"printf %s (\S+) >>", command))
+        if "base64 -d" in command:
+            self.typed.append(base64.b64decode(self._b64).decode())
         elif "capture-pane" in command:
             return ExecOutput(self.screens.pop(0) if len(self.screens) > 1 else (self.screens or [""])[0], 0)
         return ExecOutput("", 0)
@@ -131,7 +135,7 @@ def test_agent_loop_stops_at_max_turns_and_bounds_context():
 
     result = asyncio.run(agent_loop(fast_terminal(FakeShell(["$ "])), "t", complete, max_turns=12, history_turns=3))
     assert (result.turns, result.completed) == (12, False)
-    assert max(calls) == 2 + 2 * 3 - 1  # system + task + last exchanges ending with the new observation
+    assert max(calls) == 2 + 2 * 3 + 1  # system + task + last 3 exchanges + the new screen
 
 
 def test_chat_client_provider_defaults(monkeypatch):
@@ -247,3 +251,46 @@ def test_run_task_uses_an_already_converted_task_as_is(tmp_path, monkeypatch):
     run_module.run_task(dense, RUBRIC, "oracle", tmp_path / "work")
     assert calls[0][calls[0].index("-p") + 1] == str(dense)
     assert not (tmp_path / "work" / "task").exists()
+
+
+def test_long_keystrokes_are_sent_in_chunks():
+    from reward_lens.harness.terminal import CHUNK, send_commands
+    text = "cat > big.py << 'EOF'\n" + "x = 1\n" * 30_000 + "EOF\n"
+    commands = send_commands("rl", text)
+    assert len(commands) > 3 and all(len(c) < CHUNK + 200 for c in commands)
+    shell = FakeShell(["$ "])
+    asyncio.run(Terminal(shell).send(text))
+    assert shell.typed == [text]
+
+
+def test_history_turns_zero_sends_only_the_current_screen():
+    sizes = []
+
+    def complete(messages):
+        sizes.append(len(messages))
+        return json.dumps({"commands": []})
+    asyncio.run(agent_loop(fast_terminal(FakeShell(["$ "])), "t", complete, max_turns=4, history_turns=0))
+    assert sizes == [3, 3, 3, 3]
+
+
+@pytest.mark.parametrize("text, check", [
+    ('{"commands": [{"keystrokes": "cat > a.md << EOF\\n```json\\n{}\\n```\\nEOF\\n"}], "task_complete": false}',
+     lambda r: r.commands[0].keystrokes.count("```") == 2 and not r.task_complete),
+    ('{"commands": [], "task_complete": "false"}', lambda r: r.error is None and not r.task_complete),
+    ('{"commands": [], "task_complete": "true"}', lambda r: r.task_complete),
+    ('Here you go: {"commands": [], "task_complete": true} and also {see} the {notes}', lambda r: r.task_complete),
+    ('{broken {"commands": [{"keystrokes": "ls\\n"}]}', lambda r: r.commands == [Command("ls\n", 1.0)]),
+    ('[1, 2] {"commands": []}', lambda r: r.error is None),
+])
+def test_parse_reply_edge_cases(text, check):
+    assert check(parse_reply(text))
+
+
+def test_trajectory_tolerates_null_durations_and_string_arguments(tmp_path):
+    path = tmp_path / "trajectory.json"
+    path.write_text(json.dumps({"steps": [
+        {"source": "agent", "tool_calls": [{"function_name": "bash_command", "arguments": {"keystrokes": "ls\n", "duration": None}}]},
+        {"source": "agent", "tool_calls": [{"function_name": "bash_command", "arguments": "pwd\n"}]},
+        {"source": "agent", "tool_calls": [{"function_name": "bash_command", "arguments": '{"keystrokes": "id\\n", "duration": -3}'}]},
+    ]}))
+    assert load_commands(path) == [Command("ls\n", 1.0), Command("pwd\n", 1.0), Command("id\n", 0.0)]

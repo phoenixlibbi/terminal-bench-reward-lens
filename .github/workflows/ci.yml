@@ -33,7 +33,16 @@ jobs:
       - uses: actions/checkout@v4
       - run: python -m py_compile reward_lens/templates/reward_lens_grader.py reward_lens/templates/corrupt_outputs.py
       - run: |
+          mkdir -p /tmp/ctrf /tmp/junit
           printf '{"name":"t","milestones":[{"name":"m","weight":1,"tests":["test_*"]}],"gates":[]}' > /tmp/rubric.json
-          printf '{"results":{"tests":[{"name":"t.py::test_a","status":"passed"},{"name":"t.py::test_b","status":"failed"}]}}' > /tmp/ctrf.json
-          python reward_lens/templates/reward_lens_grader.py --ctrf /tmp/ctrf.json --rubric /tmp/rubric.json --out-dir /tmp/out
-          python -c "import json; r=json.load(open('/tmp/out/reward.json')); assert r=={'reward':0.5,'binary':0.0,'naive_dense':0.5,'milestone':0.5}, r"
+          printf '{"results":{"tests":[{"name":"t.py::test_a","status":"passed"},{"name":"t.py::test_b","status":"failed"}]}}' > /tmp/ctrf/ctrf.json
+          printf '<testsuites><testsuite><testcase classname="t" name="test_a"/><testcase classname="t" name="test_b"><failure/></testcase></testsuite></testsuites>' > /tmp/junit/reward_lens_junit.xml
+          for d in ctrf junit; do
+            python reward_lens/templates/reward_lens_grader.py --results-dir /tmp/$d --rubric /tmp/rubric.json --out-dir /tmp/out-$d
+            python -c "import json,sys; r=json.load(open('/tmp/out-$d/reward.json')); assert r=={'reward':0.5,'binary':0.0,'naive_dense':0.5,'milestone':0.5}, r"
+          done
+      - run: |
+          mkdir -p /tmp/app && cd /tmp && python $GITHUB_WORKSPACE/reward_lens/templates/corrupt_outputs.py --snapshot snap.json --root /tmp/app
+          printf '{"rmse": 1.5, "rows": [{"id": 1, "y": 0}, {"id": 2, "y": 1}]}' > /tmp/app/out.json
+          python $GITHUB_WORKSPACE/reward_lens/templates/corrupt_outputs.py --mode perturb --since snap.json --root /tmp/app
+          python -c "import json; r=json.load(open('/tmp/app/out.json')); assert r['rmse']!=1.5 and [x['id'] for x in r['rows']]==[1,2] and [x['y'] for x in r['rows']]==[1,0], r"

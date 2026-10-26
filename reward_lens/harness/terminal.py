@@ -34,15 +34,25 @@ class ExecOutput:
 ExecFn = Callable[[str], Awaitable[ExecOutput]]
 
 
-def send_command(session: str, keystrokes: str) -> str:
-    """Shell command that types `keystrokes` into the tmux pane."""
+CHUNK = 60_000  # stay well below Linux's 128 KiB limit for a single command-line argument
+
+
+def send_commands(session: str, keystrokes: str) -> list[str]:
+    """Shell commands that type `keystrokes` into the tmux pane (several for very long payloads)."""
     if SPECIAL_KEY.match(keystrokes):
-        return f"tmux send-keys -t {session} {keystrokes}"
+        return [f"tmux send-keys -t {session} {keystrokes}"]
     payload = base64.b64encode(keystrokes.encode()).decode()
-    buf = f"/tmp/.{session}_keys"
+    b64, buf = f"/tmp/.{session}_keys.b64", f"/tmp/.{session}_keys"
+    commands = [f": > {b64}"] + [f"printf %s {payload[i:i + CHUNK]} >> {b64}" for i in range(0, len(payload), CHUNK)]
     # paste-buffer turns "\n" into Enter, so "ls -la\n" runs the command
-    return (f"printf %s {payload} | base64 -d > {buf} && tmux load-buffer -b {session} {buf} "
-            f"&& tmux paste-buffer -d -b {session} -t {session} && rm -f {buf}")
+    commands.append(f"base64 -d {b64} > {buf} && tmux load-buffer -b {session} {buf} "
+                    f"&& tmux paste-buffer -d -b {session} -t {session} && rm -f {buf} {b64}")
+    return commands
+
+
+def send_command(session: str, keystrokes: str) -> str:
+    """Single shell command for short keystrokes (see send_commands for long ones)."""
+    return " && ".join(send_commands(session, keystrokes))
 
 
 def capture_command(session: str, history_lines: int = 0) -> str:
@@ -65,8 +75,8 @@ class Terminal:
                          f"&& tmux set-option -t {self.session} history-limit 50000")
 
     async def send(self, keystrokes: str) -> None:
-        if keystrokes:
-            result = await self._exec(send_command(self.session, keystrokes))
+        for command in send_commands(self.session, keystrokes) if keystrokes else []:
+            result = await self._exec(command)
             if result.return_code != 0:
                 raise RuntimeError(f"failed to send keys: {result.stdout[-500:]}")
 
@@ -89,6 +99,7 @@ class Terminal:
 def harbor_exec(environment, user=None) -> ExecFn:
     """Adapt a Harbor BaseEnvironment to the ExecFn the terminal needs."""
     async def run(command: str) -> ExecOutput:
-        result = await environment.exec(command=f"bash -lc {shlex.quote(command)}", user=user)
+        # plain sh: works in images without bash (e.g. Alpine) and keeps login-profile output off the screen
+        result = await environment.exec(command=f"sh -c {shlex.quote(command)}", user=user)
         return ExecOutput((result.stdout or "") + (result.stderr or ""), result.return_code)
     return run

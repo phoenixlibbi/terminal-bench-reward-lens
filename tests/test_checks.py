@@ -55,3 +55,10 @@ def test_numeric_edge_cases():
 def test_works_with_numpy_arrays():
     np = pytest.importorskip("numpy")
     assert_correlated(np.array(GOOD), np.array(TRUTH), min_r=0.9)
+
+
+def test_truncated_outputs_are_length_mismatches():
+    with pytest.raises(AssertionError, match="length mismatch"):
+        rmse([1.0], [1.0, 100.0])
+    with pytest.raises(AssertionError, match="length mismatch"):
+        assert_strict_intervals([0, 0], [1, 1], [2])
