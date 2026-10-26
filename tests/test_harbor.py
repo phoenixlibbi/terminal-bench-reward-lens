@@ -30,3 +30,11 @@ def test_trial_without_ctrf_has_empty_results(tmp_path, make_trial):
     trial = make_trial("t1", model="model-x", tests={"test_a": "passed"})
     (trial / "verifier" / "ctrf.json").unlink()
     assert find_trials(tmp_path)[0].results == {}
+
+
+def test_model_name_from_custom_agent_import_path(tmp_path, make_trial):
+    trial = make_trial("t1", model="x", tests={"test_a": "passed"})
+    result = json.loads((trial / "result.json").read_text())
+    result["config"]["agent"] = {"name": "reward_lens.harness.agents:ReplayAgent", "model_name": None}
+    (trial / "result.json").write_text(json.dumps(result))
+    assert find_trials(tmp_path)[0].model == "ReplayAgent"

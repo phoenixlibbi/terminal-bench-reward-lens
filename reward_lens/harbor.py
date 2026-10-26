@@ -54,7 +54,7 @@ def _model_name(agent: dict, path: Path) -> str:
     if agent.get("name") in ("oracle", "nop"):
         return agent["name"]
     name = agent.get("model_name") or agent.get("name") or path.parent.name
-    return name.split("/")[-1]
+    return name.split("/")[-1].split(":")[-1]  # "provider/model" -> model, "pkg.mod:Agent" -> Agent
 
 
 def _termination(exception_info: dict | None) -> str:
