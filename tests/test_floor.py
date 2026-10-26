@@ -146,3 +146,22 @@ def test_weight_sensitivity_detects_fragile_and_robust_rankings(tmp_path):
     assert tight.ranking_kept > 0.95
     lo, hi = tight.r_range["model-b"]
     assert lo <= 3 / 8 <= hi
+
+
+def test_perturb_shuffles_record_fields_including_binary_labels(tmp_path):
+    root = tmp_path / "app"
+    root.mkdir()
+    marker = tmp_path / "marker"
+    marker.touch()
+    old = time.time() - 100
+    os.utime(marker, (old, old))
+    records = [{"row_id": i, "label": i % 2, "prob": i / 10, "name": f"r{i}", "const": 3} for i in range(8)]
+    (root / "preds.json").write_text(json.dumps(records))
+    _corrupt(root, marker, "perturb")
+    out = json.loads((root / "preds.json").read_text())
+    assert [r["row_id"] for r in out] == list(range(8))           # IDs untouched
+    assert [r["name"] for r in out] == [f"r{i}" for i in range(8)]  # strings untouched
+    assert sorted(r["label"] for r in out) == sorted(i % 2 for i in range(8))  # balance kept
+    assert [r["label"] for r in out] != [i % 2 for i in range(8)]   # correspondence broken
+    assert [r["prob"] for r in out] != [i / 10 for i in range(8)]
+    assert all(r["const"] == 4 for r in out)                        # constant field rescaled

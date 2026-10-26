@@ -38,6 +38,8 @@ def corrupt_json(value, mode, rng, key=""):
     if isinstance(value, dict):
         return {k: corrupt_json(v, mode, rng, k) for k, v in value.items()}
     if isinstance(value, list):
+        if mode == "perturb" and len(value) > 1 and all(isinstance(v, dict) for v in value):
+            return corrupt_records(value, rng)
         if mode == "perturb" and len(value) > 1 and all(is_number(v) for v in value) and len(set(value)) > 1:
             shuffled = list(value)
             while shuffled == value:
@@ -45,6 +47,33 @@ def corrupt_json(value, mode, rng, key=""):
             return shuffled
         return [corrupt_json(v, mode, rng, key) for v in value]
     return value
+
+
+def corrupt_records(records, rng):
+    """A list of JSON objects is a table: shuffle each numeric field across records.
+
+    Rescaling alone leaves small integers such as 0/1 labels unchanged; shuffling keeps
+    their distribution (so range and balance checks still pass) but breaks which record
+    gets which value. Fields that never vary are rescaled instead.
+    """
+    keys = sorted(set().union(*(r.keys() for r in records)))
+    out = [dict(r) for r in records]
+    for key in keys:
+        values = [r.get(key) for r in records]
+        if ID_COLUMN.search(key) or not all(is_number(v) for v in values):
+            for r in out:
+                if key in r:
+                    r[key] = corrupt_json(r[key], "perturb", rng, key)
+            continue
+        if len(set(values)) > 1:
+            shuffled = list(values)
+            while shuffled == values:
+                rng.shuffle(shuffled)
+        else:
+            shuffled = [scale(v) for v in values]
+        for r, v in zip(out, shuffled):
+            r[key] = v
+    return out
 
 
 def _is_float(s):
