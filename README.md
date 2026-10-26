@@ -136,13 +136,30 @@ Case study on two production-style Harbor tasks that already had recorded agent 
 
 With 10–16 runs per model the binary intervals overlap; the milestone intervals do not. The ranking is unchanged in **100%** of 1,500 weight resamples (Dirichlet α = 50 and α = 10 around the rubric, and a flat Dirichlet), so the conclusion does not depend on the chosen weights. Absolute R does: under arbitrary weights Model B's mean R on Task B ranges from 0.27 to 0.88, which is why weights have to be justified by a floor test.
 
-### 3. End-to-end checks in Docker
+### 3. A non-solution collects up to 62% of naive dense reward
+
+`reward-lens floor` on both tasks, in Docker, through the tasks' real verifiers:
+
+| Adversary | Task A: binary / naive / **R** | Task B: binary / naive / **R** |
+|---|---|---|
+| `nop`: does nothing | 0 / 0.06 / **0.00** | 0 / 0.04 / **0.00** |
+| `zeros`: correct files and schema, every number 0 | 0 / 0.38 / **0.20** | 0 / 0.62 / **0.16** |
+| `perturb`: correct files and schema, values shuffled across rows | 0 / 0.38 / **0.20** | 0 / 0.62 / **0.16** |
+| `oracle`: reference solution | 1 / 1.00 / **1.00** | 1 / 1.00 / **1.00** |
+
+- On Task B, outputs in which **every number is zero pass 62% of the tests**. A policy trained on naive dense reward would be paid most of the reward for learning the output format.
+- The weighted rubric cuts this to 0.16–0.20, all of it from deliverables, reproducibility and sanity milestones (weight 0.20–0.25). That residual is the honest price of rewarding format at all; `floor` makes it measurable and `--max-free-credit` makes it enforceable in CI.
+- The floor test also caught a flaw in the first version of `perturb`: rescaling left 0/1 labels unchanged (`round(1 × 1.37 + 0.11) = 1`), so label checks still passed. Lists of JSON records are now treated as tables and shuffled column-wise.
+
+### 4. End-to-end checks in Docker
 
 | Check | Result |
 |---|---|
 | Converted Task A and Task B, oracle solution | binary 1, naive dense 1, milestone 1 on both, recorded by Harbor in `reward.json` |
 | Recomputed binary reward vs. each run's original `reward.txt` | 54 / 54 runs agree |
-| Replay of a recorded passing run in a fresh container | reproduces reward 1.0 |
+| `ReplayAgent`: recorded passing run, re-typed in a fresh container | reward 1.0, **16 / 16** tests in the same state as the recording |
+| `ReplayAgent`: recorded near-miss run (binary 0, R 0.92) | binary 0, R 0.917, **16 / 16** tests in the same state |
+| `LoopAgent` with a local `llama3.1:8b` via Ollama | runs the full observe → JSON action → tmux loop through Harbor; valid actions every turn, at zero API cost |
 
 ## Install
 
