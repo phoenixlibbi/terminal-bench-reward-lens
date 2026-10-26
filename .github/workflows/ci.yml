@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev,harness]"
+      - run: pytest -q
+  grader-py38:
+    # the in-container grader and corruptor must run on old task images
+    runs-on: ubuntu-latest
+    container: python:3.8-slim
+    steps:
+      - uses: actions/checkout@v4
+      - run: python -m py_compile reward_lens/templates/reward_lens_grader.py reward_lens/templates/corrupt_outputs.py
+      - run: |
+          printf '{"name":"t","milestones":[{"name":"m","weight":1,"tests":["test_*"]}],"gates":[]}' > /tmp/rubric.json
+          printf '{"results":{"tests":[{"name":"t.py::test_a","status":"passed"},{"name":"t.py::test_b","status":"failed"}]}}' > /tmp/ctrf.json
+          python reward_lens/templates/reward_lens_grader.py --ctrf /tmp/ctrf.json --rubric /tmp/rubric.json --out-dir /tmp/out
+          python -c "import json; r=json.load(open('/tmp/out/reward.json')); assert r=={'reward':0.5,'binary':0.0,'naive_dense':0.5,'milestone':0.5}, r"

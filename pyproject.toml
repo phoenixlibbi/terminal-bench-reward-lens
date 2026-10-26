@@ -4,16 +4,18 @@ build-backend = "hatchling.build"
 
 [project]
 name = "reward-lens"
-version = "0.0.1"
+version = "0.1.0"
 description = "Grade the same terminal-agent runs under binary and dense milestone verifiers."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [{ name = "Muhammad Labeeb Tariq" }]
 dependencies = []
+keywords = ["reinforcement-learning", "reward-design", "llm-agents", "benchmarks", "terminal-bench", "harbor"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+harness = ["harbor>=0.20"]
 
 [project.scripts]
 reward-lens = "reward_lens.cli:main"
