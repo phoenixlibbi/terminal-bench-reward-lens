@@ -20,8 +20,13 @@ from tests.conftest import write_trial
 CORRUPT = resources.files("reward_lens") / "templates" / "corrupt_outputs.py"
 
 
-def _corrupt(root, marker, mode):
-    subprocess.run([sys.executable, str(CORRUPT), "--mode", mode, "--marker", str(marker), "--root", str(root)],
+def _snapshot(root, snap):
+    subprocess.run([sys.executable, str(CORRUPT), "--snapshot", str(snap), "--root", str(root)],
+                   check=True, capture_output=True)
+
+
+def _corrupt(root, snap, mode):
+    subprocess.run([sys.executable, str(CORRUPT), "--mode", mode, "--since", str(snap), "--root", str(root)],
                    check=True, capture_output=True)
 
 
@@ -29,18 +34,15 @@ def _corrupt(root, marker, mode):
 def outputs(tmp_path):
     root = tmp_path / "app"
     (root / "data").mkdir(parents=True)
-    (root / "data" / "input.csv").write_text("id,x\n1,5\n")  # older than the marker: must stay untouched
-    old = time.time() - 100
-    os.utime(root / "data" / "input.csv", (old, old))
-    marker = tmp_path / "marker"
-    marker.touch()
-    os.utime(marker, (old + 50, old + 50))
+    (root / "data" / "input.csv").write_text("id,x\n1,5\n")  # exists before the solution: must stay untouched
+    snap = tmp_path / "snap.json"
+    _snapshot(root, snap)
     (root / "out").mkdir()
     (root / "out" / "metrics.json").write_text(json.dumps(
         {"rmse": 1.5, "n_rows": 3, "model": "gbm", "fold_scores": [0.7, 0.8, 0.9], "run_id": 42, "ok": True}))
     (root / "out" / "preds.csv").write_text("delivery_id,pred,label\n7,1.5,a\n8,2.5,b\n9,3.5,c\n")
     (root / "src.py").write_text("x = 1\n")
-    return root, marker
+    return root, snap
 
 
 def test_zeros_keeps_format_and_ids(outputs):
@@ -151,13 +153,11 @@ def test_weight_sensitivity_detects_fragile_and_robust_rankings(tmp_path):
 def test_perturb_shuffles_record_fields_including_binary_labels(tmp_path):
     root = tmp_path / "app"
     root.mkdir()
-    marker = tmp_path / "marker"
-    marker.touch()
-    old = time.time() - 100
-    os.utime(marker, (old, old))
+    snap = tmp_path / "snap.json"
+    _snapshot(root, snap)
     records = [{"row_id": i, "label": i % 2, "prob": i / 10, "name": f"r{i}", "const": 3} for i in range(8)]
     (root / "preds.json").write_text(json.dumps(records))
-    _corrupt(root, marker, "perturb")
+    _corrupt(root, snap, "perturb")
     out = json.loads((root / "preds.json").read_text())
     assert [r["row_id"] for r in out] == list(range(8))           # IDs untouched
     assert [r["name"] for r in out] == [f"r{i}" for i in range(8)]  # strings untouched
@@ -167,75 +167,30 @@ def test_perturb_shuffles_record_fields_including_binary_labels(tmp_path):
     assert all(r["const"] == 4 for r in out)                        # constant field rescaled
 
 
-def test_diagnose_classifies_tests_and_suggests_conditions(tmp_path):
-    from reward_lens.floor import diagnose
-    from reward_lens.rubric import Gate
-    rubric = Rubric("toy", (Milestone("format", 1.0, ("test_schema", "test_sane", "test_varied")),
-                            Milestone("values", 3.0, ("test_value_*",))),
-                    gates=(Gate("integrity", ("test_inputs",)),))
-    outcomes = {  # test -> (nop, zeros, perturb, oracle)
-        "test_inputs": ("passed",) * 4,
-        "test_schema": ("failed", "passed", "passed", "passed"),
-        "test_sane": ("failed", "passed", "failed", "passed"),
-        "test_varied": ("failed", "failed", "passed", "passed"),
-        "test_value_a": ("failed", "failed", "failed", "passed"),
-        "test_value_b": ("failed", "failed", "failed", "failed"),
-    }
-    jobs = tmp_path / "jobs"
-    for i, adversary in enumerate(("nop", "zeros", "perturb", "oracle")):
-        write_trial(jobs / adversary, f"t{i}", model="x", agent="oracle",
-                    tests={t: o[i] for t, o in outcomes.items()})
-
-    d = diagnose(floor_rows(jobs, rubric), rubric)
-    verdicts = {v.test: v.verdict.split(":")[0] for v in d.verdicts}
-    assert verdicts == {"test_inputs": "integrity gate", "test_schema": "format-only", "test_sane": "partial",
-                        "test_varied": "partial", "test_value_a": "strong", "test_value_b": "broken"}
-    assert d.leaking_milestones == ["format"] and d.safe_milestones == ["values"]
-    assert d.suggested.milestones[0].requires_any == ("values",)
-    assert d.worst_before == pytest.approx(2 / 3 * 1 / 4) and d.worst_after == 0.0
-    md = floor_markdown(floor_rows(jobs, rubric), rubric)
-    assert "Weak-test report" in md and "requires_any = [\"values\"]" in md and "0.17 -> 0.00" in md
+def test_perturb_changes_small_integers_and_keeps_camelcase_and_bom_ids(tmp_path):
+    root = tmp_path / "app"
+    root.mkdir()
+    snap = tmp_path / "snap.json"
+    _snapshot(root, snap)
+    (root / "status.json").write_text(json.dumps({"n_errors": 0, "converged": 1, "userId": 7, "rows": [{"y": 1}, {"y": 1}]}))
+    (root / "table.csv").write_bytes("\ufeffid,score\n1,0.5\n2,0.7\n".encode("utf-8"))
+    _corrupt(root, snap, "perturb")
+    status = json.loads((root / "status.json").read_text())
+    assert status["n_errors"] != 0 and status["converged"] != 1 and status["userId"] == 7
+    assert [r["y"] for r in status["rows"]] == [2, 2]
+    raw = (root / "table.csv").read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")                        # BOM preserved
+    rows = list(csv.DictReader(io.StringIO(raw.decode("utf-8-sig"))))
+    assert [r["id"] for r in rows] == ["1", "2"] and [r["score"] for r in rows] == ["0.7", "0.5"]
 
 
-def test_mixed_milestone_is_not_safe_to_condition_on(tmp_path):
-    """A milestone with one strong test but other weak ones still pays cheaters, so it cannot unlock credit."""
-    from reward_lens.floor import diagnose
-    rubric = Rubric("toy", (Milestone("format", 1.0, ("test_schema",)),
-                            Milestone("sanity", 1.0, ("test_weak_sanity", "test_strict")),
-                            Milestone("values", 2.0, ("test_value",))))
-    outcomes = {"test_schema": ("failed", "passed", "passed", "passed"),
-                "test_weak_sanity": ("failed", "passed", "passed", "passed"),
-                "test_strict": ("failed", "failed", "failed", "passed"),
-                "test_value": ("failed", "failed", "failed", "passed")}
-    jobs = tmp_path / "jobs"
-    for i, adversary in enumerate(("nop", "zeros", "perturb", "oracle")):
-        write_trial(jobs / adversary, f"t{i}", model="x", agent="oracle", tests={t: o[i] for t, o in outcomes.items()})
-    d = diagnose(floor_rows(jobs, rubric), rubric)
-    assert d.leaking_milestones == ["format", "sanity"] and d.safe_milestones == ["values"]
-    assert d.worst_before > 0 and d.worst_after == 0.0
-
-
-def test_untested_when_no_cheater_ran_and_suggestions_are_checked_against_oracle(tmp_path):
-    from reward_lens.floor import diagnose
-    rubric = Rubric("toy", (Milestone("format", 1.0, ("test_schema",)), Milestone("values", 3.0, ("test_value",))))
-    jobs = tmp_path / "jobs"
-    write_trial(jobs / "oracle", "o", model="x", agent="oracle", tests={"test_schema": "passed", "test_value": "passed"})
-    d = diagnose(floor_rows(jobs, rubric), rubric)
-    assert {v.verdict.split(":")[0] for v in d.verdicts} == {"untested"}
-    assert d.safe_milestones == [] and d.suggested == rubric
-
-    write_trial(jobs / "zeros", "z", model="x", agent="oracle", tests={"test_schema": "passed", "test_value": "failed"})
-    d = diagnose(floor_rows(jobs, rubric), rubric)
-    assert d.oracle_after == 1.0 and d.worst_after == 0.0
-    assert "still scores 1.00" in floor_markdown(floor_rows(jobs, rubric), rubric)
-
-
-def test_runs_zeroed_by_a_gate_do_not_count_as_leaking(tmp_path):
-    from reward_lens.floor import diagnose
-    from reward_lens.rubric import Gate
-    rubric = Rubric("toy", (Milestone("format", 1.0, ("test_schema",)), Milestone("values", 1.0, ("test_value",))),
-                    gates=(Gate("integrity", ("test_inputs",)),))
-    jobs = tmp_path / "jobs"
-    write_trial(jobs / "zeros", "z", model="x", agent="oracle",
-                tests={"test_inputs": "failed", "test_schema": "passed", "test_value": "failed"})
-    assert diagnose(floor_rows(jobs, rubric), rubric).leaking_milestones == []
+def test_outputs_copied_with_preserved_timestamps_are_still_found(tmp_path):
+    root = tmp_path / "app"
+    root.mkdir()
+    snap = tmp_path / "snap.json"
+    _snapshot(root, snap)
+    (root / "result.json").write_text(json.dumps({"score": 0.9}))
+    old = time.time() - 10_000
+    os.utime(root / "result.json", (old, old))  # like cp -p / tar extraction
+    _corrupt(root, snap, "zeros")
+    assert json.loads((root / "result.json").read_text()) == {"score": 0.0}

@@ -27,7 +27,7 @@ from reward_lens.rewards import milestone_reward
 from reward_lens.rubric import Rubric
 
 ADVERSARIES = ("nop", "zeros", "perturb", "oracle")
-MARKER = "/tmp/.reward_lens_floor_marker"
+MARKER = "/tmp/.reward_lens_floor_snapshot.json"
 
 NOP_SH = """#!/bin/bash
 # reward-lens floor adversary: nop (does nothing)
@@ -39,11 +39,10 @@ CORRUPT_SH = """#!/bin/bash
 # Run the reference solution, then keep the outputs' format but destroy their values.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
-touch {marker}
-sleep 1.1
-bash "$HERE/solve_reference.sh"
 PY="$(command -v python3 || command -v python)"
-"$PY" "$HERE/corrupt_outputs.py" --mode {mode} --marker {marker} {roots}
+"$PY" "$HERE/corrupt_outputs.py" --snapshot {marker} {roots}
+bash "$HERE/solve_reference.sh"
+"$PY" "$HERE/corrupt_outputs.py" --mode {mode} --since {marker} {roots}
 """
 
 

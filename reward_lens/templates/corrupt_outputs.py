@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Floor-test adversary: keep the format of a solution's outputs, destroy their values.
 
-Used by `reward-lens floor`. Runs inside the task container after the reference
-solution. Standard library only, Python 3.8+. Every .json/.jsonl/.csv/.tsv file
-under --root modified after --marker is rewritten:
+Used by `reward-lens floor`. Runs inside the task container: once with --snapshot before the
+reference solution, then with --mode after it. Standard library only, Python 3.8+. Every
+.json/.jsonl/.csv/.tsv file under --root that the solution created or changed (by content hash,
+so copies with preserved timestamps are caught too) is rewritten:
   zeros    every number becomes 0
-  perturb  numeric lists and columns are shuffled; scalars are rescaled
+  perturb  numeric lists and columns are shuffled; scalars are rescaled (integers always change)
 String fields and ID-like columns are left alone, so schema and row checks still pass.
 """
 import argparse
 import csv
+import hashlib
 import io
 import json
 import os
@@ -18,7 +20,13 @@ import re
 
 DATA_EXTENSIONS = {".json", ".jsonl", ".csv", ".tsv"}
 SKIP_DIRS = {"/proc", "/sys", "/dev", "/tests", "/logs", "/solution", "/usr", "/lib", "/bin", "/etc"}
-ID_COLUMN = re.compile(r"(^|_)(id|index|key)$", re.IGNORECASE)
+ID_COLUMN = re.compile(r"(^|[_\-\s.])(id|index|key|uuid)$", re.IGNORECASE)
+CAMEL_ID = re.compile(r"[a-z0-9](Id|ID|Key|Index|Uuid|UUID)$")
+
+
+def is_id(name):
+    name = name.lstrip("\ufeff").strip()
+    return bool(ID_COLUMN.search(name) or CAMEL_ID.search(name))
 
 
 def is_number(x):
@@ -26,13 +34,15 @@ def is_number(x):
 
 
 def scale(x):
-    y = x * 1.37 + 0.11
-    return int(round(y)) if isinstance(x, int) else y
+    if isinstance(x, int):
+        y = int(round(x * 1.37 + 0.11))
+        return y if y != x else x + 1  # 0 and 1 would otherwise survive unchanged
+    return x * 1.37 + 0.11
 
 
 def corrupt_json(value, mode, rng, key=""):
     if is_number(value):
-        if ID_COLUMN.search(key):
+        if is_id(key):
             return value
         return type(value)(0) if mode == "zeros" else scale(value)
     if isinstance(value, dict):
@@ -60,7 +70,7 @@ def corrupt_records(records, rng):
     out = [dict(r) for r in records]
     for key in keys:
         values = [r.get(key) for r in records]
-        if ID_COLUMN.search(key) or not all(is_number(v) for v in values):
+        if is_id(key) or not all(is_number(v) for v in values):
             for r in out:
                 if key in r:
                     r[key] = corrupt_json(r[key], "perturb", rng, key)
@@ -91,7 +101,7 @@ def corrupt_table(text, delimiter, mode, rng):
     header, body = rows[0], rows[1:]
     for col, name in enumerate(header):
         values = [r[col] for r in body if col < len(r)]
-        if ID_COLUMN.search(name) or not values or not all(v == "" or _is_float(v) for v in values):
+        if is_id(name) or not values or not all(v == "" or _is_float(v) for v in values):
             continue
         if mode == "zeros":
             new = ["0" if v != "" else v for v in values]
@@ -110,7 +120,10 @@ def corrupt_table(text, delimiter, mode, rng):
 
 def corrupt_file(path, mode, rng):
     ext = os.path.splitext(path)[1].lower()
-    with open(path) as f:
+    with open(path, "rb") as f:
+        bom = f.read(3) == b"\xef\xbb\xbf"
+    encoding = "utf-8-sig" if bom else "utf-8"
+    with open(path, encoding=encoding, newline="") as f:
         text = f.read()
     if ext == ".json":
         new = json.dumps(corrupt_json(json.loads(text), mode, rng), indent=2)
@@ -119,32 +132,55 @@ def corrupt_file(path, mode, rng):
                         for line in text.splitlines() if line.strip()) + "\n"
     else:
         new = corrupt_table(text, "\t" if ext == ".tsv" else ",", mode, rng)
-    with open(path, "w") as f:
+    with open(path, "w", encoding=encoding, newline="") as f:
         f.write(new)
 
 
-def find_outputs(roots, marker_mtime):
+def data_files(roots):
     for root in roots:
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames if os.path.join(dirpath, d) not in SKIP_DIRS
                            and not d.startswith(".") and d not in ("__pycache__", "node_modules", "site-packages")]
             for name in filenames:
-                path = os.path.join(dirpath, name)
-                if os.path.splitext(name)[1].lower() in DATA_EXTENSIONS and os.path.getmtime(path) > marker_mtime:
-                    yield path
+                if os.path.splitext(name)[1].lower() in DATA_EXTENSIONS:
+                    yield os.path.join(dirpath, name)
+
+
+def digest(path):
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def snapshot(roots):
+    return {path: digest(path) for path in data_files(roots)}
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["zeros", "perturb"], required=True)
-    parser.add_argument("--marker", required=True, help="file touched before the reference solution ran")
+    parser.add_argument("--snapshot", help="record data-file hashes here (run before the reference solution)")
+    parser.add_argument("--since", help="snapshot file: corrupt files created or changed since it was taken")
+    parser.add_argument("--mode", choices=["zeros", "perturb"])
     parser.add_argument("--root", action="append", default=None, help="where outputs live (default /app)")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv)
+    roots = args.root or ["/app"]
 
+    if args.snapshot:
+        with open(args.snapshot, "w") as f:
+            json.dump(snapshot(roots), f)
+        return
+    if not (args.mode and args.since):
+        parser.error("use --snapshot FILE, or --mode MODE --since FILE")
+    with open(args.since) as f:
+        before = json.load(f)
     rng = random.Random(args.seed)
-    marker_mtime = os.path.getmtime(args.marker)
-    for path in sorted(find_outputs(args.root or ["/app"], marker_mtime)):
+    changed = sorted(path for path, h in snapshot(roots).items() if before.get(path) != h)
+    if not changed:
+        print("reward-lens floor: no new or changed data files under %s" % ", ".join(roots))
+    for path in changed:
         try:
             corrupt_file(path, args.mode, rng)
             print("reward-lens floor: %s %s" % (args.mode, path))
