@@ -93,9 +93,9 @@ def _main(argv: list[str] | None) -> int:
         print(draft_rubric(args.runs, args.name))
     elif args.command == "convert":
         result = convert(args.task, load_rubric(args.rubric), args.out, args.primary, args.force, args.with_checks)
-        print(f"converted {len(result.tests)} tests -> {result.out_dir}")
-        if result.dropped_lines:
-            print("replaced reward-writing lines in test.sh:\n  " + "\n  ".join(result.dropped_lines))
+        print(f"converted {len(result.tests)} tests -> {result.out_dir} (original verifier kept as tests/test_original.sh)")
+        for warning in result.warnings:
+            print(f"warning: {warning}", file=sys.stderr)
     elif args.command == "floor":
         rubric = load_rubric(args.rubric)
         jobs = args.work / "jobs"

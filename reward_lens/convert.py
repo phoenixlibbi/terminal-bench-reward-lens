@@ -1,9 +1,11 @@
 """Convert a Terminal-Bench-style Harbor task (binary reward) into a dense milestone-reward task.
 
-The source task is only read. The converted copy gets:
-  tests/rubric.json             the rubric, in JSON so the grader needs no third-party parser
-  tests/reward_lens_grader.py   stdlib-only grader (see templates/)
-  tests/test.sh                 same setup and pytest run, but the 0/1 tail is replaced by the grader
+The source task is only read. The converted copy keeps the original verifier byte for byte as
+tests/test_original.sh and gets a small tests/test.sh wrapper that
+  1. runs the original verifier unchanged, with PYTEST_ADDOPTS asking pytest for a JUnit XML report
+     (built into pytest: no plugin to install, works under pip, uv run, uvx, venvs, ...),
+  2. keeps the original 0/1 verdict as reward_original.txt,
+  3. runs tests/reward_lens_grader.py (stdlib only), which writes binary, naive dense and milestone rewards.
 """
 
 import ast
@@ -11,23 +13,38 @@ import hashlib
 import json
 import re
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 
 from reward_lens.rubric import Rubric, RubricError, matches, to_dict
 
 SKIP_DIRS = {"runs", "model-run-logs", "jobs", "__pycache__"}
-CTRF_PATH = "/logs/verifier/ctrf.json"
 GRADER_MARKER = "# --- reward-lens: dense milestone reward (generated) ---"
+JUNIT_PATH = "/logs/verifier/reward_lens_junit.xml"
+
+WRAPPER = """#!/bin/bash
+{marker}
+# Runs the task's original verifier unchanged (test_original.sh), records per-test results with pytest's
+# built-in JUnit XML report, then grades them with the rubric in rubric.json.
+mkdir -p /logs/verifier
+rm -f {junit} /logs/verifier/reward.txt /logs/verifier/reward.json /logs/verifier/reward_original.txt
+export PYTEST_ADDOPTS="${{PYTEST_ADDOPTS:-}} --junitxml={junit}"
+bash /tests/test_original.sh
+echo "original verifier exited with $?"
+[ -f /logs/verifier/reward.txt ] && mv /logs/verifier/reward.txt /logs/verifier/reward_original.txt
+PY="$(command -v python3 || command -v python)"
+"$PY" /tests/reward_lens_grader.py --results-dir /logs/verifier --rubric /tests/rubric.json \\
+  --out-dir /logs/verifier --primary {primary} --original-reward /logs/verifier/reward_original.txt
+"""
 
 
 @dataclass(frozen=True)
 class Conversion:
     out_dir: Path
     tests: list[str]
-    dropped_lines: list[str]
     source_digest: str
+    warnings: list[str] = field(default_factory=list)
 
 
 def collect_test_ids(tests_dir: Path) -> list[str]:
@@ -60,37 +77,19 @@ def check_coverage(rubric: Rubric, test_ids: list[str]) -> None:
         raise RubricError("rubric does not fit the task:\n  " + "\n  ".join(errors))
 
 
-def rewrite_test_sh(script: str, primary: str) -> tuple[str, list[str]]:
-    """Keep everything up to the last pytest call, make sure it writes CTRF, replace the reward tail."""
-    if GRADER_MARKER in script:
-        raise ValueError("test.sh was already converted")
-    lines = script.rstrip("\n").split("\n")
-    pytest_lines = [i for i, line in enumerate(lines)
-                    if re.search(r"(^|\s|/)(pytest|py\.test)(\s|$)", line) and not line.lstrip().startswith("#")
-                    and "install" not in line]
-    if not pytest_lines:
-        raise ValueError("no pytest invocation found in test.sh")
-    last = pytest_lines[-1]
-    for i in pytest_lines:
-        line = lines[i]
-        if "--ctrf" not in line:
-            line = re.sub(r"\b(pytest|py\.test)\b", rf"\1 --ctrf {CTRF_PATH}", line, count=1)
-        if "||" not in line:
-            line += " || true"  # a failing test run must not abort the script before grading
-        lines[i] = line
-
-    kept, dropped = lines[: last + 1], [line for line in lines[last + 1:] if line.strip()]
-    if "pytest-json-ctrf" not in script:  # the CTRF plugin must be installed before pytest runs
-        kept.insert(last, "python3 -m pip install --quiet pytest-json-ctrf==0.3.5 || pip install --quiet pytest-json-ctrf")
-    tail = [
-        "",
-        GRADER_MARKER,
-        'PY="$(command -v python3 || command -v python)"',
-        f'"$PY" /tests/reward_lens_grader.py --ctrf {CTRF_PATH} --rubric /tests/rubric.json '
-        f"--out-dir /logs/verifier --primary {primary}",
-        "",
-    ]
-    return "\n".join(kept + tail), dropped
+def script_warnings(script: str) -> list[str]:
+    """Verifier patterns the wrapper cannot fully support; conversion still works, with caveats."""
+    code = [line for line in script.splitlines() if not line.lstrip().startswith("#")]
+    calls = [line for line in code if re.search(r"(^|[\s/;&|(])(pytest|py\.test)(\s|$)", line)
+             and not re.search(r"\b(pip|uv pip|apt-get|apk|conda)\b.*\binstall\b", line)]
+    warnings = []
+    if not calls:
+        warnings.append("no pytest call found in test.sh: without per-test results only binary can be recovered")
+    if len(calls) > 1:
+        warnings.append(f"{len(calls)} pytest calls in test.sh: the JUnit report keeps the last call's results only")
+    if "--junitxml" in script or "junit_xml" in script:
+        warnings.append("test.sh sets its own --junitxml, which overrides the wrapper's report path")
+    return warnings
 
 
 def tree_digest(root: Path) -> str:
@@ -104,8 +103,12 @@ def tree_digest(root: Path) -> str:
 def convert(task_dir: Path, rubric: Rubric, out_dir: Path, primary: str = "milestone",
             force: bool = False, with_checks: bool = False) -> Conversion:
     task_dir, out_dir = task_dir.resolve(), out_dir.resolve()
-    if not (task_dir / "tests" / "test.sh").exists():
+    test_sh = task_dir / "tests" / "test.sh"
+    if not test_sh.exists():
         raise ValueError(f"{task_dir} is not a Harbor task (no tests/test.sh)")
+    original = test_sh.read_text()
+    if GRADER_MARKER in original:
+        raise ValueError(f"{task_dir} is already converted")
     if out_dir == task_dir or task_dir in out_dir.parents:
         raise ValueError("output directory must be outside the source task")
     if out_dir.exists():
@@ -120,17 +123,18 @@ def convert(task_dir: Path, rubric: Rubric, out_dir: Path, primary: str = "miles
     shutil.copytree(task_dir, out_dir, ignore=lambda d, names: [
         n for n in names if n in SKIP_DIRS or n == ".DS_Store"])
     tests = out_dir / "tests"
-    script, dropped = rewrite_test_sh((tests / "test.sh").read_text(), primary)
-    (tests / "test.sh").write_text(script)
+    (tests / "test_original.sh").write_text(original)
+    (tests / "test.sh").write_text(WRAPPER.format(marker=GRADER_MARKER, junit=JUNIT_PATH, primary=primary))
+    (tests / "test.sh").chmod(0o755)
     (tests / "rubric.json").write_text(json.dumps(to_dict(rubric), indent=2))
-    grader = resources.files("reward_lens") / "templates" / "reward_lens_grader.py"
-    (tests / "reward_lens_grader.py").write_text(grader.read_text())
+    templates = resources.files("reward_lens") / "templates"
+    (tests / "reward_lens_grader.py").write_text((templates / "reward_lens_grader.py").read_text())
     if with_checks:  # value-check helpers for hardening the task's own tests (import reward_lens_checks)
         (tests / "reward_lens_checks.py").write_text((resources.files("reward_lens") / "checks.py").read_text())
 
     if tree_digest(task_dir) != digest:
         raise RuntimeError("source task changed during conversion")
-    return Conversion(out_dir, test_ids, dropped, digest)
+    return Conversion(out_dir, test_ids, digest, script_warnings(original))
 
 
 def _skipped(path: Path, root: Path) -> bool:

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from reward_lens.convert import GRADER_MARKER, convert
-from reward_lens.ctrf import PASSING, load_ctrf
+from reward_lens.ctrf import PASSING, load_results
 from reward_lens.harbor import Trial, find_trials
 from reward_lens.rubric import Rubric
 
@@ -54,7 +54,7 @@ def run_task(task: Path, rubric: Rubric, agent: str, work: Path, *, model: str |
 
 def replay_fidelity(original: Path, replayed: Trial) -> Fidelity:
     """How many tests end in the same pass/fail state when a recorded run is replayed."""
-    before = load_ctrf(original / "verifier" / "ctrf.json")
+    before = load_results(original / "verifier")
     after = replayed.results
     flipped = {t: (s, after.get(t, "missing")) for t, s in before.items()
                if (s in PASSING) != (after.get(t) in PASSING)}

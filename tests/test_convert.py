@@ -1,12 +1,13 @@
 import json
 import random
+import shlex
 import subprocess
 import sys
 from importlib import resources
 
 import pytest
 
-from reward_lens.convert import GRADER_MARKER, collect_test_ids, convert, rewrite_test_sh, tree_digest
+from reward_lens.convert import GRADER_MARKER, collect_test_ids, convert, script_warnings, tree_digest
 from reward_lens.rewards import binary_reward, milestone_reward, naive_dense_reward
 from reward_lens.rubric import Gate, Milestone, Rubric, RubricError, to_dict
 
@@ -60,31 +61,6 @@ def test_collect_test_ids(task):
         "test_outputs_exist", "test_inputs_unchanged", "TestMetrics::test_rmse", "TestMetrics::test_mae"]
 
 
-def test_rewrite_keeps_setup_and_replaces_binary_tail():
-    script, dropped = rewrite_test_sh(TB_TEST_SH, "milestone")
-    assert "pip install --no-cache-dir pytest==8.4.1" in script
-    assert "pytest --ctrf /logs/verifier/ctrf.json /tests/test_state.py -rA || TEST_FAIL=1" in script
-    assert "reward.txt" not in script
-    assert GRADER_MARKER in script and "--primary milestone" in script
-    assert any("echo 1 > /logs/verifier/reward.txt" in line for line in dropped)
-
-
-def test_rewrite_adds_ctrf_flag_plugin_and_failure_guard():
-    script, _ = rewrite_test_sh("#!/bin/bash\nset -e\nuv run pytest /tests -q\n", "binary")
-    lines = script.splitlines()
-    run = next(line for line in lines if "uv run pytest" in line)
-    assert "pytest --ctrf /logs/verifier/ctrf.json /tests -q || true" in run
-    assert lines.index(run) > next(i for i, line in enumerate(lines) if "pytest-json-ctrf" in line)
-
-
-def test_rewrite_rejects_scripts_without_pytest_or_already_converted():
-    with pytest.raises(ValueError, match="no pytest"):
-        rewrite_test_sh("echo hi\n", "milestone")
-    script, _ = rewrite_test_sh(TB_TEST_SH, "milestone")
-    with pytest.raises(ValueError, match="already converted"):
-        rewrite_test_sh(script, "milestone")
-
-
 def test_convert_writes_dense_task_and_leaves_source_untouched(task, tmp_path):
     before = tree_digest(task)
     result = convert(task, RUBRIC, tmp_path / "out")
@@ -95,7 +71,10 @@ def test_convert_writes_dense_task_and_leaves_source_untouched(task, tmp_path):
     assert (out / "instruction.md").read_text() == "Fix the pipeline."
     assert json.loads((out / "tests" / "rubric.json").read_text()) == to_dict(RUBRIC)
     assert (out / "tests" / "reward_lens_grader.py").exists()
-    assert GRADER_MARKER in (out / "tests" / "test.sh").read_text()
+    wrapper = (out / "tests" / "test.sh").read_text()
+    assert GRADER_MARKER in wrapper and "bash /tests/test_original.sh" in wrapper and "--junitxml=" in wrapper
+    assert (out / "tests" / "test_original.sh").read_text() == TB_TEST_SH  # original verifier kept byte for byte
+    assert result.warnings == []
 
 
 def test_convert_refuses_bad_rubrics_and_unsafe_outputs(task, tmp_path):
@@ -111,6 +90,8 @@ def test_convert_refuses_bad_rubrics_and_unsafe_outputs(task, tmp_path):
     with pytest.raises(FileExistsError):
         convert(task, RUBRIC, tmp_path / "out")
     convert(task, RUBRIC, tmp_path / "out", force=True)
+    with pytest.raises(ValueError, match="already converted"):
+        convert(tmp_path / "out", RUBRIC, tmp_path / "again")
 
 
 def _run_grader(tmp_path, rubric, results, primary="milestone"):
@@ -120,7 +101,7 @@ def _run_grader(tmp_path, rubric, results, primary="milestone"):
     if results is not None:
         (tmp_path / "ctrf.json").write_text(json.dumps({"results": {"tests": [
             {"name": f"test_state.py::{t}", "status": s} for t, s in results.items()]}}))
-    subprocess.run([sys.executable, str(grader), "--ctrf", str(tmp_path / "ctrf.json"),
+    subprocess.run([sys.executable, str(grader), "--results-dir", str(tmp_path),
                     "--rubric", str(tmp_path / "rubric.json"), "--out-dir", str(tmp_path / "logs"),
                     "--primary", primary], check=True, capture_output=True)
     return json.loads((tmp_path / "logs" / "reward.json").read_text())
@@ -155,7 +136,7 @@ def test_standalone_grader_matches_library_on_random_runs(tmp_path, rubric):
         assert out["reward"] == out["milestone"]
 
 
-def test_standalone_grader_scores_zero_without_ctrf(tmp_path):
+def test_standalone_grader_scores_zero_without_results(tmp_path):
     out = _run_grader(tmp_path, RUBRIC, None, primary="binary")
     assert out == {"reward": 0.0, "binary": 0.0, "naive_dense": 0.0, "milestone": 0.0}
 
@@ -165,3 +146,87 @@ def test_convert_with_checks_copies_value_check_helpers(task, tmp_path):
     helpers = (out / "tests" / "reward_lens_checks.py").read_text()
     assert "def assert_correlated" in helpers
     assert not (convert(task, RUBRIC, tmp_path / "plain").out_dir / "tests" / "reward_lens_checks.py").exists()
+
+
+@pytest.mark.parametrize("script, expected", [
+    ("#!/bin/bash\necho no tests here\n", "no pytest call"),
+    ("pytest /tests/a.py\nuv run pytest /tests/b.py\n", "2 pytest calls"),
+    ("pytest --junitxml=/tmp/x.xml /tests\n", "own --junitxml"),
+    ("pip install pytest==8\n# pytest in a comment\npython -m pytest /tests -q\n", None),
+])
+def test_script_warnings(script, expected):
+    warnings = script_warnings(script)
+    assert (warnings == []) if expected is None else any(expected in w for w in warnings)
+
+
+JUNIT = """<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest">
+<testcase classname="test_state" name="test_outputs_exist"/>
+<testcase classname="test_state" name="test_inputs_unchanged"/>
+<testcase classname="test_state.TestMetrics" name="test_rmse"><failure message="off"/></testcase>
+<testcase classname="test_state.TestMetrics" name="test_mae"><skipped/></testcase>
+</testsuite></testsuites>"""
+
+
+def test_grader_reads_junit_like_the_library(tmp_path):
+    from reward_lens.ctrf import load_junit
+    (tmp_path / "reward_lens_junit.xml").write_text(JUNIT)
+    results = load_junit(tmp_path / "reward_lens_junit.xml")
+    assert results == {"test_outputs_exist": "passed", "test_inputs_unchanged": "passed",
+                       "TestMetrics::test_rmse": "failed", "TestMetrics::test_mae": "skipped"}
+    out = _run_grader_dir(tmp_path, RUBRIC)
+    assert out["milestone"] == pytest.approx(milestone_reward(results, RUBRIC).reward)
+    assert (out["binary"], out["naive_dense"]) == (0.0, 0.75)
+
+
+def test_same_test_name_in_two_files_cannot_hide_a_failure(tmp_path):
+    from reward_lens.ctrf import load_ctrf
+    (tmp_path / "ctrf.json").write_text(json.dumps({"results": {"tests": [
+        {"name": "test_a.py::test_x", "status": "failed"}, {"name": "test_b.py::test_x", "status": "passed"}]}}))
+    results = load_ctrf(tmp_path / "ctrf.json")
+    assert results == {"test_a.py::test_x": "failed", "test_b.py::test_x": "passed"}
+    rubric = Rubric("r", (Milestone("m", 1.0, ("test_x",)),))
+    assert binary_reward(results) == 0.0 and milestone_reward(results, rubric).reward == 0.5
+    out = _run_grader_dir(tmp_path, rubric)
+    assert (out["binary"], out["milestone"]) == (0.0, 0.5)
+
+
+def test_unknown_test_only_zeroes_the_milestone_reward(tmp_path):
+    results = {"test_outputs_exist": "passed", "test_inputs_unchanged": "passed", "test_brand_new": "passed"}
+    out = _run_grader(tmp_path, RUBRIC, results, primary="binary")
+    assert out == {"reward": 1.0, "binary": 1.0, "naive_dense": 1.0, "milestone": 0.0}
+    breakdown = json.loads((tmp_path / "logs" / "reward_breakdown.json").read_text())
+    assert "test_brand_new" in breakdown["error"]
+
+
+def _run_grader_dir(results_dir, rubric):
+    grader = resources.files("reward_lens") / "templates" / "reward_lens_grader.py"
+    (results_dir / "rubric.json").write_text(json.dumps(to_dict(rubric)))
+    subprocess.run([sys.executable, str(grader), "--results-dir", str(results_dir),
+                    "--rubric", str(results_dir / "rubric.json"), "--out-dir", str(results_dir / "out")],
+                   check=True, capture_output=True)
+    return json.loads((results_dir / "out" / "reward.json").read_text())
+
+
+def test_wrapper_end_to_end_with_real_pytest(task, tmp_path):
+    """Run the generated test.sh around a real TB-style verifier, with /tests and /logs redirected."""
+    (task / "tests" / "test_state.py").write_text(
+        "def test_outputs_exist(): pass\ndef test_inputs_unchanged(): pass\n"
+        "class TestMetrics:\n    def test_rmse(self): assert False\n    def test_mae(self): pass\n")
+    (task / "tests" / "test.sh").write_text(
+        f"#!/bin/bash\nset -euo pipefail\n{shlex.quote(sys.executable)} -m pytest /tests/test_state.py -rA -p no:cacheprovider "
+        "|| TEST_FAIL=1\nif [ \"${TEST_FAIL:-0}\" -eq 0 ]; then echo 1 > /logs/verifier/reward.txt; "
+        "else echo 0 > /logs/verifier/reward.txt; fi\n")
+    out = convert(task, RUBRIC, tmp_path / "dense").out_dir
+    tests, logs = out / "tests", tmp_path / "logs"
+    for name in ("test.sh", "test_original.sh", "test_state.py"):
+        text = (tests / name).read_text().replace("/logs/verifier", str(logs)).replace("/tests/", f"{tests}/")
+        (tests / name).write_text(text)
+    proc = subprocess.run(["bash", str(tests / "test.sh")], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    rewards = json.loads((logs / "reward.json").read_text())
+    expected = milestone_reward({"test_outputs_exist": "passed", "test_inputs_unchanged": "passed",
+                                 "TestMetrics::test_rmse": "failed", "TestMetrics::test_mae": "passed"}, RUBRIC)
+    assert rewards == {"reward": pytest.approx(expected.reward), "binary": 0.0, "naive_dense": 0.75,
+                       "milestone": pytest.approx(expected.reward), "original_verifier": 0.0}
+    assert (logs / "reward_original.txt").read_text().strip() == "0"
+    assert not (logs / "reward.txt").exists()

@@ -5,10 +5,11 @@ agent/ and verifier/. Job-level result.json files aggregate trials and are skipp
 """
 
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from reward_lens.ctrf import load_ctrf
+from reward_lens.ctrf import load_results
 
 
 @dataclass(frozen=True)
@@ -24,10 +25,15 @@ class Trial:
 
 
 def find_trials(root: str | Path) -> list[Trial]:
+    """Every readable trial under root. Unreadable result.json files (e.g. a run still in progress) are skipped."""
     trials = []
     for result_path in sorted(Path(root).rglob("result.json")):
-        result = json.loads(result_path.read_text())
-        if "trial_name" in result:
+        try:
+            result = json.loads(result_path.read_text())
+        except (OSError, ValueError) as exc:
+            print(f"reward-lens: skipping {result_path}: {exc}", file=sys.stderr)
+            continue
+        if isinstance(result, dict) and "trial_name" in result:
             trials.append(load_trial(result_path.parent, result))
     return trials
 
@@ -35,14 +41,13 @@ def find_trials(root: str | Path) -> list[Trial]:
 def load_trial(path: Path, result: dict) -> Trial:
     config = result.get("config") or _read_json(path / "config.json")
     agent = config.get("agent", {})
-    ctrf = path / "verifier" / "ctrf.json"
     rewards = (result.get("verifier_result") or {}).get("rewards") or {}
     metadata = (result.get("agent_result") or {}).get("metadata") or {}
     return Trial(
         path=path,
         task=result.get("task_name", path.parent.name),
         model=_model_name(agent, path),
-        results=load_ctrf(ctrf) if ctrf.exists() else {},
+        results=load_results(path / "verifier"),
         original_reward=rewards.get("binary", rewards.get("reward")),
         rewards=dict(rewards),
         termination=_termination(result.get("exception_info")),
@@ -53,8 +58,10 @@ def load_trial(path: Path, result: dict) -> Trial:
 def _model_name(agent: dict, path: Path) -> str:
     if agent.get("name") in ("oracle", "nop"):
         return agent["name"]
-    name = agent.get("model_name") or agent.get("name") or path.parent.name
-    return name.split("/")[-1].split(":")[-1]  # "provider/model" -> model, "pkg.mod:Agent" -> Agent
+    if agent.get("model_name"):
+        return agent["model_name"].split("/", 1)[-1]  # "ollama/llama3.1:8b" -> "llama3.1:8b"
+    name = agent.get("name") or path.parent.name
+    return name.split(":")[-1] if ":" in name and "." in name.split(":")[0] else name  # "pkg.mod:Agent" -> Agent
 
 
 def _termination(exception_info: dict | None) -> str:

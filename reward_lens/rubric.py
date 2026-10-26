@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path
 
+from reward_lens.ctrf import bare_name, normalize_name, strip_params
+
 SCORING_MODES = {"fraction", "all"}
 
 
@@ -55,9 +57,14 @@ class RubricError(ValueError):
 
 
 def matches(pattern: str, test_id: str) -> bool:
-    """Glob match. Patterns without '::' match the bare test function name; '[params]' suffixes are optional."""
-    target = test_id if "::" in pattern else test_id.split("::")[-1]
-    return fnmatchcase(target, pattern) or fnmatchcase(target.split("[")[0], pattern)
+    """Glob match. Patterns without '::' match the bare test function name; '[params]' suffixes are optional;
+    a 'file.py::' prefix (used when two files define the same test) is optional too."""
+    if "::" in pattern:
+        targets = {test_id, normalize_name(test_id)}
+    else:
+        targets = {bare_name(test_id)}
+    targets |= {strip_params(t) for t in targets}
+    return any(fnmatchcase(t, pattern) for t in targets)
 
 
 def to_dict(rubric: Rubric) -> dict:
@@ -95,14 +102,23 @@ def to_toml(rubric: Rubric) -> str:
 
 
 def load_rubric(path: str | Path) -> Rubric:
-    data = tomllib.loads(Path(path).read_text())
+    try:
+        data = tomllib.loads(Path(path).read_text())
+    except tomllib.TOMLDecodeError as exc:
+        raise RubricError(f"{path}: invalid TOML: {exc}") from exc
     task = data.get("task", {})
-    milestones = tuple(
-        Milestone(m["name"], float(m["weight"]), tuple(m["tests"]), m.get("scoring", "fraction"),
-                  tuple(m.get("requires", ())), tuple(m.get("requires_any", ())))
-        for m in data.get("milestone", [])
-    )
-    gates = tuple(Gate(g["name"], tuple(g["tests"])) for g in data.get("gate", []))
+    try:
+        milestones = tuple(
+            Milestone(m["name"], float(m["weight"]), tuple(m["tests"]), m.get("scoring", "fraction"),
+                      tuple(m.get("requires", ())), tuple(m.get("requires_any", ())))
+            for m in data.get("milestone", [])
+        )
+        gates = tuple(Gate(g["name"], tuple(g["tests"])) for g in data.get("gate", []))
+    except KeyError as exc:
+        raise RubricError(f"{path}: every milestone needs name, weight and tests; every gate name and tests "
+                          f"(missing {exc})") from exc
+    except (TypeError, ValueError) as exc:
+        raise RubricError(f"{path}: {exc}") from exc
     rubric = Rubric(
         name=task.get("name", Path(path).stem),
         milestones=milestones,
