@@ -69,7 +69,7 @@ jobs:
       - run: reward-lens floor tasks/my-task --rubric tasks/my-task/rubric.toml --work /tmp/floor --max-free-credit 0.1
 ```
 
-Exit codes: `0` ok, `1` a gate failed (`--strict`, `--max-free-credit`), `2` usage or rubric error.
+Exit codes: `0` ok, `1` a gate failed (`--strict`, `--max-free-credit`, or an adversary produced no runs to check), `2` usage or rubric error, `3` Harbor/Docker failed.
 
 ---
 
@@ -180,7 +180,7 @@ reward-lens rubric-init jobs/my-task --name my-task > rubric.toml    # draft: on
 reward-lens regrade jobs/my-task --rubric rubric.toml --out report.md --json report.json
 ```
 
-Any directory containing Harbor trial folders works (`result.json` + `verifier/ctrf.json`). The report contains:
+Any directory containing Harbor trial folders works (`result.json` plus per-test results in `verifier/`: a CTRF report from `pytest-json-ctrf`, or the JUnit XML that converted tasks write). Tests with the same name in different files are kept apart, and reruns keep the worst result, so a failure can never be hidden. The report contains:
 
 - **Sanity checks:** the oracle must score R = 1.0, and the recomputed binary reward must match each run's own `reward.txt`.
 - **Leaderboard:** binary pass rate, naive dense, mean R, pass @ R ≥ threshold, near-misses (0.75 ≤ R < 0.95), no-progress runs (R < 0.05), and each model's rank under binary vs. R.
@@ -197,23 +197,25 @@ reward-lens convert path/to/task --rubric rubric.toml --out path/to/task-dense
 harbor run -p path/to/task-dense -a oracle
 ```
 
-The source task is only read (a content digest is checked before and after). The converted copy keeps the environment, instruction, solution and test setup, and replaces the 0/1 tail of `tests/test.sh` with:
+The source task is only read (a content digest is checked before and after). The converted copy keeps the environment, instruction and solution unchanged, and keeps the original verifier **byte for byte** as `tests/test_original.sh`. A small wrapper becomes the new `tests/test.sh`:
 
 ```bash
-pytest --ctrf /logs/verifier/ctrf.json /tests/test_state.py -rA || TEST_FAIL=1
-
 # --- reward-lens: dense milestone reward (generated) ---
-PY="$(command -v python3 || command -v python)"
-"$PY" /tests/reward_lens_grader.py --ctrf /logs/verifier/ctrf.json --rubric /tests/rubric.json --out-dir /logs/verifier --primary milestone
+export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} --junitxml=/logs/verifier/reward_lens_junit.xml"
+bash /tests/test_original.sh                       # the task's own verifier, untouched
+mv /logs/verifier/reward.txt /logs/verifier/reward_original.txt
+python3 /tests/reward_lens_grader.py --results-dir /logs/verifier --rubric /tests/rubric.json --primary milestone ...
 ```
 
-The grader writes `reward.json`, which Harbor records in full:
+Per-test results come from pytest's **built-in** JUnit XML report, requested through `PYTEST_ADDOPTS`, so nothing has to be installed and verifiers that run pytest through pip, `uv run`, `uvx` or a venv all work. The original script is never edited, so line continuations, comments or `if pytest ...; then` forms cannot break. `convert` warns when a verifier calls pytest more than once or sets its own `--junitxml`.
+
+The grader (standard library only, Python 3.8+) writes `reward.json`, which Harbor records in full:
 
 ```json
-{"reward": 0.62, "binary": 0.0, "naive_dense": 0.81, "milestone": 0.62}
+{"reward": 0.62, "binary": 0.0, "naive_dense": 0.81, "milestone": 0.62, "original_verifier": 0.0}
 ```
 
-plus `reward_breakdown.json` with each milestone's score. `--primary` chooses which value Harbor treats as *the* reward, so the same task can train or evaluate under either philosophy. The grader always writes a reward, even when pytest crashes before producing a report.
+plus `reward_breakdown.json` with each milestone's score. `--primary` chooses which value Harbor treats as *the* reward, so the same task can train or evaluate under either philosophy; `original_verifier` keeps the task's own 0/1 verdict for comparison. The grader always writes a reward, even when the verifier crashes before producing results, and a rubric problem (e.g. a test added after the rubric was written) only zeroes the milestone reward, never binary or naive dense.
 
 ### 3. Reward-hacking floor test
 
@@ -227,10 +229,10 @@ Four adversaries are run through the task's real verifier in Docker, as replacem
 |---|---|---|
 | `nop` | does nothing | 0 |
 | `zeros` | runs the reference solution, then sets every number in its outputs to 0 | ≈ 0 |
-| `perturb` | runs the reference solution, then shuffles numeric columns/lists and rescales scalars | ≈ 0 |
+| `perturb` | runs the reference solution, then shuffles numeric fields across rows and changes every other number | ≈ 0 |
 | `oracle` | the reference solution | 1 |
 
-`zeros` and `perturb` keep every file, column, row count and ID of a correct answer and none of its values: the cheapest form of "looks right". The report shows the reward each adversary collects under all three rewards and which milestones pay it.
+Outputs are found by content snapshots taken before and after the reference solution (so copies with preserved timestamps count), and ID-like fields (`id`, `user_id`, `userId`, ...) are left alone. `zeros` and `perturb` keep every file, column, row count and ID of a correct answer and none of its values: the cheapest form of "looks right". The report shows the reward each adversary collects under all three rewards and which milestones pay it.
 
 It then diagnoses the verifier, test by test:
 
@@ -240,10 +242,11 @@ It then diagnoses the verifier, test by test:
 | `format-only` | passes for outputs with wrong values (both `zeros` and `perturb`) |
 | `partial` | catches one kind of wrong answer but not the other (e.g. constant outputs but not shuffled ones) |
 | `strong` | every non-solution fails it: real evidence of solving the task |
+| `untested` | no non-solution result exists for it, so nothing can be concluded |
 | `integrity gate` | expected to pass for anything that does not cheat |
 | `broken` | the reference solution fails it |
 
-Milestones made only of weak tests get a suggested `requires_any` on the milestones that contain strong tests, with the worst non-solution reward before and after the change. `--suggest-rubric fixed.toml` writes the improved rubric, and `--max-free-credit 0.1` turns the whole check into a CI gate.
+Milestones are then judged by behaviour: a milestone that pays any non-solution is *leaking* (even if it also contains a strong test), and a milestone that pays none is *safe*. Every leaking milestone gets a suggested `requires_any` on the safe ones, with the worst non-solution reward before and after the change, and the suggestion is re-scored on the oracle run so a fix can never penalize the reference solution. `--suggest-rubric fixed.toml` writes the improved rubric, and `--max-free-credit 0.1` turns the whole check into a CI gate.
 
 ### 4. Robustness
 
@@ -356,10 +359,10 @@ The strongest pattern of all is to test the agent's code, not its output files: 
 The library has no dependencies and can be called from a training loop:
 
 ```python
-from reward_lens import load_ctrf, load_rubric, milestone_reward, binary_reward
+from reward_lens import load_results, load_rubric, milestone_reward, binary_reward
 
 rubric = load_rubric("rubric.toml")
-results = load_ctrf("trial/verifier/ctrf.json")       # {test_id: status}
+results = load_results("trial/verifier")              # {test_id: status}, from CTRF or JUnit XML
 r = milestone_reward(results, rubric)
 print(r.reward, r.failed_gate, [(m.name, m.score) for m in r.milestones])
 ```
@@ -398,7 +401,7 @@ pytest -q
 
 ```
 reward_lens/
-  ctrf.py              per-test verifier results
+  ctrf.py              per-test verifier results (CTRF JSON, JUnit XML)
   rubric.py            rubric format, validation, test -> milestone matching
   rewards.py           binary, naive dense and milestone rewards
   harbor.py            discover Harbor trials and how they ended
