@@ -11,6 +11,7 @@ from reward_lens.harbor import find_trials
 from reward_lens.report import build_report, to_json, to_markdown
 from reward_lens.sensitivity import sensitivity_markdown, weight_sensitivity
 from reward_lens.rubric import load_rubric
+from reward_lens.run import AGENTS, parse_kwargs, run_task, summary_markdown
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -58,6 +59,17 @@ def main(argv: list[str] | None = None) -> None:
                       help="Dirichlet concentration around the rubric weights (repeatable; default 50 and 10)")
     sens.add_argument("--out", type=Path)
 
+    run = sub.add_parser("run", help="convert a task, run an agent on it via Harbor, report all rewards")
+    run.add_argument("task", type=Path)
+    run.add_argument("--rubric", type=Path, required=True)
+    run.add_argument("--agent", default="oracle", help=f"one of {sorted(AGENTS)} or a module:Class import path")
+    run.add_argument("--work", type=Path, required=True, help="where the converted task and jobs are written")
+    run.add_argument("-m", "--model", help="model for LLM agents, e.g. ollama/llama3.1:8b")
+    run.add_argument("--trajectory", type=Path, help="recorded trial to replay (with --agent replay)")
+    run.add_argument("--ak", action="append", help="extra agent kwarg key=value (repeatable)")
+    run.add_argument("--attempts", type=int, default=1)
+    run.add_argument("--out", type=Path)
+
     args = parser.parse_args(argv)
     if args.command == "regrade":
         run_regrade(args)
@@ -75,6 +87,14 @@ def main(argv: list[str] | None = None) -> None:
             jobs = run_floor(args.task, args.work, tuple(args.adversaries.split(",")),
                              tuple(args.root or ["/app"]), attempts=args.attempts)
         emit(floor_markdown(floor_rows(jobs, rubric), rubric), args.out)
+    elif args.command == "run":
+        kwargs = parse_kwargs(args.ak)
+        if args.trajectory:
+            kwargs["trajectory"] = str(args.trajectory.resolve())
+        jobs = run_task(args.task, load_rubric(args.rubric), args.agent, args.work, model=args.model,
+                        agent_kwargs=kwargs, attempts=args.attempts)
+        original = args.trajectory if args.trajectory and (args.trajectory / "verifier").exists() else None
+        emit(summary_markdown(find_trials(jobs), original), args.out)
     elif args.command == "sensitivity":
         rubric = load_rubric(args.rubric)
         runs = build_report(find_trials(args.runs), rubric).agent_runs
