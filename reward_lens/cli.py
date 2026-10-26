@@ -80,6 +80,7 @@ def _main(argv: list[str] | None) -> int:
     run.add_argument("--trajectory", type=Path, help="recorded trial to replay (with --agent replay)")
     run.add_argument("--ak", action="append", help="extra agent kwarg key=value (repeatable)")
     run.add_argument("--attempts", type=int, default=1)
+    run.add_argument("--env-file", type=Path, help="dotenv file with agent credentials, passed to Harbor")
     run.add_argument("--out", type=Path)
 
     args = parser.parse_args(argv)
@@ -111,7 +112,7 @@ def _main(argv: list[str] | None) -> int:
         if args.trajectory:
             kwargs["trajectory"] = str(args.trajectory.resolve())
         jobs = run_task(args.task, load_rubric(args.rubric), args.agent, args.work, model=args.model,
-                        agent_kwargs=kwargs, attempts=args.attempts)
+                        agent_kwargs=kwargs, attempts=args.attempts, env_file=args.env_file)
         original = args.trajectory if args.trajectory and (args.trajectory / "verifier").exists() else None
         emit(summary_markdown(find_trials(jobs), original), args.out)
     elif args.command == "sensitivity":

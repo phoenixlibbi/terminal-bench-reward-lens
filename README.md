@@ -234,6 +234,10 @@ reward-lens run path/to/task --rubric rubric.toml --agent replay --trajectory jo
 reward-lens run path/to/task --rubric rubric.toml --agent loop -m ollama/llama3.1:8b --work runs/loop
 reward-lens run path/to/task --rubric rubric.toml --agent loop -m openai/gpt-4o-mini --ak max_turns=40 --work runs/loop
 
+# Any Harbor agent works too, e.g. Claude Code on a subscription token or API key kept in a dotenv file
+#   .env:  CLAUDE_CODE_OAUTH_TOKEN=...   (from `claude setup-token`)   and  CLAUDE_FORCE_OAUTH=1
+reward-lens run path/to/task --rubric rubric.toml --agent claude-code -m anthropic/claude-sonnet-4-5 --env-file .env --work runs/cc
+
 # Or use the agents directly with Harbor
 harbor run -p path/to/task-dense -a reward_lens.harness.agents:LoopAgent -m ollama/llama3.1:8b
 ```

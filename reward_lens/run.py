@@ -17,6 +17,7 @@ AGENTS = {
     "loop": "reward_lens.harness.agents:LoopAgent",
     "oracle": "oracle",
     "nop": "nop",
+    "claude-code": "claude-code",  # Harbor's installed agent; needs CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY
 }
 
 
@@ -33,13 +34,15 @@ def harbor_binary() -> str:
 
 
 def run_task(task: Path, rubric: Rubric, agent: str, work: Path, *, model: str | None = None,
-             agent_kwargs: dict[str, str] | None = None, attempts: int = 1) -> Path:
+             agent_kwargs: dict[str, str] | None = None, attempts: int = 1, env_file: Path | None = None) -> Path:
     converted = convert(task, rubric, work / "task", force=True).out_dir
     jobs = work / "jobs"
     cmd = [harbor_binary(), "run", "-p", str(converted), "-a", AGENTS.get(agent, agent),
            "-o", str(jobs), "-k", str(attempts), "-y"]
     if model:
         cmd += ["-m", model]
+    if env_file:
+        cmd += ["--env-file", str(env_file)]  # secrets stay in the file; they never touch the command line
     for key, value in (agent_kwargs or {}).items():
         cmd += ["--ak", f"{key}={value}"]
     subprocess.run(cmd, check=True)

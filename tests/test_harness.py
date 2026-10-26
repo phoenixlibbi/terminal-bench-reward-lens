@@ -169,3 +169,23 @@ def test_harbor_agents_import_and_validate(tmp_path):
         LoopAgent(tmp_path)
     agent = LoopAgent(tmp_path, model_name="ollama/llama3.1:8b", max_turns="5")
     assert agent.max_turns == 5 and agent.name() == "reward-lens-loop"
+
+
+def test_run_task_builds_harbor_command(tmp_path, monkeypatch):
+    from reward_lens import run as run_module
+    from tests.test_convert import RUBRIC, TB_TEST_SH, TESTS_PY
+    task = tmp_path / "task"
+    (task / "tests").mkdir(parents=True)
+    (task / "tests" / "test.sh").write_text(TB_TEST_SH)
+    (task / "tests" / "test_state.py").write_text(TESTS_PY)
+    calls = []
+    monkeypatch.setattr(run_module.subprocess, "run", lambda cmd, check: calls.append(cmd))
+    jobs = run_module.run_task(task, RUBRIC, "claude-code", tmp_path / "work", model="anthropic/claude-sonnet-4-5",
+                               agent_kwargs={"max_turns": "5"}, env_file=tmp_path / ".env")
+    cmd = calls[0]
+    assert cmd[cmd.index("-a") + 1] == "claude-code"
+    assert cmd[cmd.index("-m") + 1] == "anthropic/claude-sonnet-4-5"
+    assert cmd[cmd.index("--env-file") + 1] == str(tmp_path / ".env")
+    assert cmd[cmd.index("--ak") + 1] == "max_turns=5"
+    assert cmd[cmd.index("-p") + 1] == str((tmp_path / "work" / "task").resolve())
+    assert jobs == tmp_path / "work" / "jobs"

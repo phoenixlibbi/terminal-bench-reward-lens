@@ -20,3 +20,7 @@ private/
 **/recording.cast
 **/ctrf.json
 !tests/fixtures/**/ctrf.json
+
+# Secrets (agent credentials for reward-lens run --env-file)
+.env
+*.env
