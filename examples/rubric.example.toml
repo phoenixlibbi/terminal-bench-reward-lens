@@ -1,0 +1,35 @@
+# Example rubric for a "repair the broken ML pipeline" task.
+# Cheap format checks get little weight; the checks that prove the model is right get most of it.
+
+[task]
+name = "demo-pipeline-repair"
+pass_threshold = 0.95   # R needed to count the run as solved (LHTB uses 0.95)
+near_miss = 0.75        # runs in [near_miss, pass_threshold) are reported as near-misses
+ignore = []             # tests excluded from the reward, e.g. known-flaky ones
+
+# Gates enforce integrity: if any gate test fails (or never ran), R = 0.
+[[gate]]
+name = "integrity"
+tests = ["test_inputs_not_modified", "test_no_label_leakage"]
+
+# Patterns are globs. Without "::" they match the bare test name; with it, "TestClass::test_name".
+[[milestone]]
+name = "deliverables"
+weight = 0.05
+tests = ["TestOutputFiles::*", "TestSchema::*"]
+
+[[milestone]]
+name = "reproducible"
+weight = 0.05
+tests = ["test_deterministic"]
+
+[[milestone]]
+name = "features"
+weight = 0.20
+tests = ["test_feature_*"]
+
+[[milestone]]
+name = "model_matches_reference"
+weight = 0.70
+tests = ["test_rmse", "test_mae", "test_coverage"]
+scoring = "fraction"    # "fraction" (default): share passed; "all": 1 only if every test passes

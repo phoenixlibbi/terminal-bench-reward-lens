@@ -20,39 +20,85 @@ Both verifiers still run **once, at the end of the episode**. The difference is 
 
 | Part | Module | What it does | Status |
 |---|---|---|---|
-| 1 | `reward_lens.regrade` | Reads Harbor trial logs (`verifier/ctrf.json`) and computes both the binary reward and a rubric-weighted milestone reward. Reports pass@1 vs. mean R, near-misses, ranking changes and a reward histogram. | planned |
+| 1 | `reward_lens.report` | Re-grader. Reads Harbor trial logs (`verifier/ctrf.json`) and computes the binary reward, a naive dense reward and a rubric-weighted milestone reward. Reports pass@1 vs. mean R, near-misses, ranking changes and a reward histogram. | done |
 | 2 | `reward_lens.convert` | Converts a Terminal-Bench-style Harbor task into a dense-reward task: adds a `rubric.toml` and a verifier that writes a fractional `reward.txt` plus a per-milestone breakdown. | planned |
 | 3 | `reward_lens.floor` | Reward-hacking floor test. Runs adversarial "dummy" solutions (no-op, schema-only, input echo) through each verifier and measures how much free credit they collect. | planned |
 | 4 | `reward_lens.harness` | Minimal Terminus-style agent loop (keystrokes → tmux in Docker → screen back to the model) that plugs into Harbor as a custom agent and reports both rewards live. Includes a zero-cost replay agent for recorded trajectories. | planned |
 
-## Rubric format (draft)
+## Three rewards, one run
+
+For every trial, reward-lens computes:
+
+| Reward | Definition | Paper |
+|---|---|---|
+| Binary | 1 if no test fails, else 0 | Terminal-Bench 2.0 |
+| Naive dense | Share of tests passed, all tests equal | The obvious shortcut |
+| Milestone R | `R = Σ w_k r_k / Σ w_k` over rubric milestones; 0 if any integrity gate fails | Long-Horizon-Terminal-Bench |
+
+Comparing the second and third rewards isolates the effect of **weighting**. Many verifiers spend most of their tests on cheap checks (files exist, schema, determinism), so an unweighted dense reward can hand a non-solution most of the credit.
+
+## Usage
+
+```bash
+pip install -e .
+
+# Draft a rubric from the tests seen in your trials (one milestone per test class), then edit the weights
+reward-lens rubric-init path/to/jobs/my-task --name my-task > rubric.toml
+
+# Re-grade every trial under all three rewards
+reward-lens regrade path/to/jobs/my-task --rubric rubric.toml --out report.md --json report.json
+```
+
+`regrade` accepts any directory that contains Harbor trial folders (`result.json` + `verifier/ctrf.json`). The verifier must write a CTRF report, e.g. `pytest --ctrf /logs/verifier/ctrf.json`.
+
+## Rubric format
+
+See [`examples/rubric.example.toml`](examples/rubric.example.toml). In short:
 
 ```toml
 [task]
 name = "demo-pipeline-repair"
 pass_threshold = 0.95
 
-[[milestone]]
-name = "outputs_and_schema"
-weight = 0.10
-tests = ["test_outputs_exist", "test_schema"]
+[[gate]]                       # integrity: if any of these fails, R = 0
+name = "integrity"
+tests = ["test_inputs_not_modified"]
 
 [[milestone]]
-name = "core_metrics_match_reference"
+name = "deliverables"
+weight = 0.05
+tests = ["TestOutputFiles::*", "TestSchema::*"]
+
+[[milestone]]
+name = "model_matches_reference"
 weight = 0.70
 tests = ["test_rmse", "test_coverage"]
-
-[[gate]]          # integrity: failing any of these sets R = 0
-name = "anti_cheat"
-tests = ["test_inputs_not_modified"]
+scoring = "fraction"           # or "all"
 ```
+
+Every test reported by the verifier must belong to exactly one milestone or gate (or be listed in `ignore`). Uncovered or ambiguous tests are an error, so no check silently drops out of the reward.
+
+## What the report shows
+
+- **Sanity checks:** the oracle run must score R = 1.0, and the recomputed binary reward must match the verifier's own `reward.txt`.
+- **Leaderboard:** binary pass rate, naive dense, mean milestone R, pass @ R ≥ threshold, near-misses, no-progress runs, and how each model's rank moves from binary to R.
+- **What each reward hides:** how much progress binary grading erases, and how much credit naive dense grants beyond the rubric.
+- **Reward distribution:** histogram with the bucket edges of LHTB's Figure 4.
+- **Milestone completion:** which stage of the workflow each model actually reaches.
+- **How runs ended:** exited vs. timeout vs. error (LHTB's Figure 6 analysis).
 
 ## Layout
 
 ```
-reward_lens/        library code
-examples/           small original demo task + rubric
-tests/              unit tests for the toolkit
+reward_lens/
+  ctrf.py           read per-test verifier results
+  rubric.py         rubric format, validation, test -> milestone matching
+  rewards.py        binary, naive dense and milestone rewards
+  harbor.py         discover Harbor trials and how they ended
+  report.py         aggregate, rank and render the comparison
+  cli.py            reward-lens regrade / rubric-init
+examples/           example rubric
+tests/              unit tests (pytest)
 ```
 
 ## Status
