@@ -36,7 +36,7 @@ class Reply:
 
 class ChatClient:
     def __init__(self, model: str, api_base: str | None = None, api_key: str | None = None,
-                 temperature: float = 0.2, timeout_sec: float = 600):
+                 temperature: float = 0.2, timeout_sec: float = 300, max_tokens: int = 2048):
         provider, _, name = model.partition("/") if "/" in model else ("", "", model)
         default_base, key_env = PROVIDERS.get(provider, (None, None))
         self.model = name if provider in PROVIDERS else model
@@ -44,11 +44,13 @@ class ChatClient:
         if not self.api_base:
             raise ValueError(f"no api_base for model {model!r}; pass api_base=...")
         self.api_key = api_key or (os.environ.get(key_env) if key_env else None)
-        self.temperature, self.timeout_sec = temperature, timeout_sec
+        self.temperature, self.timeout_sec, self.max_tokens = temperature, timeout_sec, max_tokens
         self.usage = Usage()
 
     def complete(self, messages: list[dict]) -> str:
-        body = json.dumps({"model": self.model, "messages": messages, "temperature": self.temperature}).encode()
+        # max_tokens bounds generation: without it some servers let a model ramble until its context is full
+        body = json.dumps({"model": self.model, "messages": messages, "temperature": self.temperature,
+                           "max_tokens": self.max_tokens}).encode()
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"

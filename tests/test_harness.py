@@ -189,3 +189,45 @@ def test_run_task_builds_harbor_command(tmp_path, monkeypatch):
     assert cmd[cmd.index("--ak") + 1] == "max_turns=5"
     assert cmd[cmd.index("-p") + 1] == str((tmp_path / "work" / "task").resolve())
     assert jobs == tmp_path / "work" / "jobs"
+
+
+def test_agent_loop_survives_failed_model_calls_and_gives_up_after_three():
+    calls = iter([TimeoutError("slow"), json.dumps({"commands": [{"keystrokes": "ls\n", "duration": 0}]}),
+                  ConnectionError("down"), ConnectionError("down"), ConnectionError("down")])
+
+    def complete(messages):
+        item = next(calls)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    shell = FakeShell(["$ "])
+    result = asyncio.run(agent_loop(fast_terminal(shell), "t", complete, max_turns=10))
+    assert shell.typed == ["ls\n"]
+    assert (result.turns, result.completed) == (5, False)
+
+
+def test_chat_client_sends_max_tokens(monkeypatch):
+    sent = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "{}"}}],
+                               "usage": {"prompt_tokens": 3, "completion_tokens": 1}}).encode()
+
+    def fake_urlopen(request, timeout):
+        sent.update(json.loads(request.data), timeout=timeout)
+        return Response()
+
+    import reward_lens.harness.llm as llm
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    client = ChatClient("ollama/llama3.1:8b", max_tokens=256, timeout_sec=30)
+    assert client.complete([{"role": "user", "content": "hi"}]) == "{}"
+    assert (sent["max_tokens"], sent["timeout"], sent["model"]) == (256, 30, "llama3.1:8b")
+    assert (client.usage.prompt_tokens, client.usage.completion_tokens) == (3, 1)

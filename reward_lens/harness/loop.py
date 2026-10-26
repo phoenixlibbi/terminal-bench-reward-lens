@@ -21,6 +21,8 @@ Rules:
 - A keystrokes value that is exactly a tmux key name (C-c, C-d, Escape, Up, ...) presses that key.
 - duration is how many seconds to wait after typing (0.1 to 60). Long jobs: wait, then check again.
 - Prefer non-interactive commands. Write files with heredocs (cat > file << 'EOF').
+- If the screen ends with a ">" continuation prompt, your last command was incomplete (unclosed quote or
+  heredoc): send "C-c" first, then retry with a complete command.
 - Verify your work against the instruction before finishing. Set task_complete to true only when done;
   you will be asked to confirm once."""
 
@@ -52,20 +54,29 @@ async def replay(terminal: Terminal, commands: list[Command], *, speedup: float 
 
 async def agent_loop(terminal: Terminal, instruction: str, complete: Callable[[list[dict]], str], *,
                      max_turns: int = 50, history_turns: int = 10, max_wait: float = 60.0,
-                     log_path: Path | None = None) -> LoopResult:
+                     max_failed_calls: int = 3, log_path: Path | None = None) -> LoopResult:
     """Observe -> ask the model -> type its commands, until it confirms completion or runs out of turns.
 
     Context is a sliding window: the system prompt, the task, and the last `history_turns` exchanges.
     """
     task_message = {"role": "user", "content": f"Task:\n{instruction}\n\nThe terminal is ready."}
     history: list[dict] = []
-    feedback, awaiting_confirmation, errors = "", False, 0
+    feedback, awaiting_confirmation, errors, failed_calls = "", False, 0, 0
     for turn in range(1, max_turns + 1):
         screen = await terminal.screen()
         observation = f"{feedback}Current terminal screen:\n{screen or '(empty)'}"
         history.append({"role": "user", "content": observation})
         messages = [{"role": "system", "content": SYSTEM_PROMPT}, task_message, *history[-2 * history_turns + 1:]]
-        text = await asyncio.to_thread(complete, messages)
+        try:
+            text = await asyncio.to_thread(complete, messages)
+        except Exception as exc:  # timeouts, connection errors, server errors: retry, then give up
+            failed_calls += 1
+            history.pop()
+            _log(log_path, {"turn": turn, "screen": screen, "reply": None, "error": f"model call failed: {exc}"})
+            if failed_calls >= max_failed_calls:
+                return LoopResult(turn, False, errors)
+            continue
+        failed_calls = 0
         history.append({"role": "assistant", "content": text})
         reply = parse_reply(text, max_duration=max_wait)
         _log(log_path, {"turn": turn, "screen": screen, "reply": text, "error": reply.error})

@@ -58,12 +58,13 @@ class LoopAgent(_TerminalAgent):
 
     def __init__(self, logs_dir: Path, model_name: str | None = None, *args, api_base: str | None = None,
                  api_key_env: str | None = None, max_turns: int = 50, history_turns: int = 10,
-                 temperature: float = 0.2, max_wait: float = 60.0, **kwargs):
+                 temperature: float = 0.2, max_wait: float = 60.0, max_tokens: int = 2048,
+                 timeout_sec: float = 300, **kwargs):
         super().__init__(logs_dir, model_name, *args, **kwargs)
         if not model_name:
             raise ValueError("LoopAgent needs a model, e.g. -m ollama/llama3.1:8b")
         self.client = ChatClient(model_name, api_base, os.environ.get(api_key_env) if api_key_env else None,
-                                 float(temperature))
+                                 float(temperature), float(timeout_sec), int(max_tokens))
         self.max_turns, self.history_turns, self.max_wait = int(max_turns), int(history_turns), float(max_wait)
 
     @staticmethod
