@@ -134,7 +134,15 @@ CONDITIONAL = Rubric(
 )
 
 
-@pytest.mark.parametrize("rubric", [RUBRIC, CONDITIONAL], ids=["plain", "conditional"])
+ANY_OF = Rubric(
+    "toy",
+    milestones=(Milestone("deliverables", 0.2, ("test_outputs_exist",), requires_any=("rmse", "mae")),
+                Milestone("rmse", 0.4, ("TestMetrics::test_rmse",)), Milestone("mae", 0.4, ("TestMetrics::test_mae",))),
+    gates=(Gate("integrity", ("test_inputs_unchanged",)),),
+)
+
+
+@pytest.mark.parametrize("rubric", [RUBRIC, CONDITIONAL, ANY_OF], ids=["plain", "requires", "requires_any"])
 def test_standalone_grader_matches_library_on_random_runs(tmp_path, rubric):
     rng = random.Random(0)
     tests = ["test_outputs_exist", "test_inputs_unchanged", "TestMetrics::test_rmse", "TestMetrics::test_mae"]

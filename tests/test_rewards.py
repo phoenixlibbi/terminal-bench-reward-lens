@@ -187,3 +187,23 @@ def test_load_rubric_reads_requires(tmp_path):
     path.write_text('[[milestone]]\nname="a"\nweight=1\ntests=["t1"]\nrequires=["b"]\n'
                     '[[milestone]]\nname="b"\nweight=1\ntests=["t2"]\n')
     assert load_rubric(path).milestones[0].requires == ("b",)
+
+
+def test_requires_any_unlocks_on_any_listed_milestone():
+    rubric = Rubric("demo", (Milestone("format", 1.0, ("test_schema",), requires_any=("a", "b")),
+                             Milestone("a", 1.0, ("test_a",)), Milestone("b", 1.0, ("test_b",))))
+    none = milestone_reward({"test_schema": "passed", "test_a": "failed", "test_b": "failed"}, rubric)
+    one = milestone_reward({"test_schema": "passed", "test_a": "failed", "test_b": "passed"}, rubric)
+    assert none.reward == 0.0 and none.milestones[0].locked
+    assert one.reward == pytest.approx(2 / 3) and not one.milestones[0].locked
+
+
+def test_to_toml_round_trips(tmp_path):
+    from reward_lens.rubric import to_toml
+    rubric = Rubric("demo", (Milestone("format", 0.25, ("TestSchema::*",), "all", ("core",), ("core",)),
+                             Milestone("core", 0.75, ("test_rmse",))),
+                    gates=(Gate("integrity", ("test_inputs_unchanged",)),), ignore=("test_flaky",),
+                    pass_threshold=0.9, near_miss=0.7)
+    path = tmp_path / "r.toml"
+    path.write_text(to_toml(rubric))
+    assert load_rubric(path) == rubric

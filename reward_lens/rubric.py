@@ -20,6 +20,7 @@ class Milestone:
     tests: tuple[str, ...]
     scoring: str = "fraction"  # "fraction": share of tests passed; "all": 1 only if every test passes
     requires: tuple[str, ...] = ()  # credit only if each of these milestones scores > 0 on its own tests
+    requires_any: tuple[str, ...] = ()  # credit only if at least one of these milestones scores > 0
 
 
 @dataclass(frozen=True)
@@ -67,9 +68,30 @@ def to_dict(rubric: Rubric) -> dict:
         "near_miss": rubric.near_miss,
         "ignore": list(rubric.ignore),
         "milestones": [{"name": m.name, "weight": m.weight, "tests": list(m.tests), "scoring": m.scoring,
-                        "requires": list(m.requires)} for m in rubric.milestones],
+                        "requires": list(m.requires), "requires_any": list(m.requires_any)}
+                       for m in rubric.milestones],
         "gates": [{"name": g.name, "tests": list(g.tests)} for g in rubric.gates],
     }
+
+
+def to_toml(rubric: Rubric) -> str:
+    def strings(values) -> str:
+        return "[" + ", ".join(f'"{v}"' for v in values) + "]"
+    lines = ["[task]", f'name = "{rubric.name}"', f"pass_threshold = {rubric.pass_threshold:g}",
+             f"near_miss = {rubric.near_miss:g}"]
+    if rubric.ignore:
+        lines.append(f"ignore = {strings(rubric.ignore)}")
+    for g in rubric.gates:
+        lines += ["", "[[gate]]", f'name = "{g.name}"', f"tests = {strings(g.tests)}"]
+    for m in rubric.milestones:
+        lines += ["", "[[milestone]]", f'name = "{m.name}"', f"weight = {m.weight:g}", f"tests = {strings(m.tests)}"]
+        if m.scoring != "fraction":
+            lines.append(f'scoring = "{m.scoring}"')
+        if m.requires:
+            lines.append(f"requires = {strings(m.requires)}")
+        if m.requires_any:
+            lines.append(f"requires_any = {strings(m.requires_any)}")
+    return "\n".join(lines) + "\n"
 
 
 def load_rubric(path: str | Path) -> Rubric:
@@ -77,7 +99,7 @@ def load_rubric(path: str | Path) -> Rubric:
     task = data.get("task", {})
     milestones = tuple(
         Milestone(m["name"], float(m["weight"]), tuple(m["tests"]), m.get("scoring", "fraction"),
-                  tuple(m.get("requires", ())))
+                  tuple(m.get("requires", ())), tuple(m.get("requires_any", ())))
         for m in data.get("milestone", [])
     )
     gates = tuple(Gate(g["name"], tuple(g["tests"])) for g in data.get("gate", []))
@@ -107,7 +129,7 @@ def validate(rubric: Rubric) -> None:
         if not m.tests:
             raise RubricError(f"milestone {m.name!r} lists no tests")
         milestone_names = {other.name for other in rubric.milestones}
-        for req in m.requires:
+        for req in (*m.requires, *m.requires_any):
             if req == m.name or req not in milestone_names:
                 raise RubricError(f"milestone {m.name!r} requires {req!r}, which is not another milestone")
     if not 0 < rubric.near_miss <= rubric.pass_threshold <= 1:

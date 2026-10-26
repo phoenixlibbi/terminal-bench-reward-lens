@@ -60,7 +60,8 @@ def milestone_reward(results: dict[str, str], rubric: Rubric) -> DenseResult:
     scores = []
     for m in rubric.milestones:
         passed, total, score = raw[m.name]
-        locked = any(raw[req][2] == 0 for req in m.requires)
+        locked = (any(raw[req][2] == 0 for req in m.requires)
+                  or (bool(m.requires_any) and all(raw[req][2] == 0 for req in m.requires_any)))
         scores.append(MilestoneScore(m.name, m.weight, passed, total, 0.0 if locked else score, locked))
 
     for g in rubric.gates:

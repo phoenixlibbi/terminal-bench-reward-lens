@@ -6,11 +6,11 @@ from pathlib import Path
 
 from reward_lens import __version__
 from reward_lens.convert import check_coverage, collect_test_ids, convert
-from reward_lens.floor import ADVERSARIES, floor_markdown, floor_rows, run_floor
+from reward_lens.floor import ADVERSARIES, diagnose, floor_markdown, floor_rows, run_floor
 from reward_lens.harbor import find_trials
 from reward_lens.report import build_report, sanity_problems, to_json, to_markdown
 from reward_lens.sensitivity import sensitivity_markdown, weight_sensitivity
-from reward_lens.rubric import RubricError, load_rubric
+from reward_lens.rubric import RubricError, load_rubric, to_toml
 from reward_lens.run import AGENTS, parse_kwargs, run_task, summary_markdown
 
 
@@ -60,6 +60,7 @@ def _main(argv: list[str] | None) -> int:
     floor.add_argument("--attempts", type=int, default=1)
     floor.add_argument("--report-only", action="store_true", help="skip Harbor, re-score existing jobs")
     floor.add_argument("--out", type=Path)
+    floor.add_argument("--suggest-rubric", type=Path, help="write the rubric with suggested requires here")
     floor.add_argument("--max-free-credit", type=float,
                        help="exit 1 if any adversary other than oracle earns milestone R above this (CI gate)")
 
@@ -101,6 +102,8 @@ def _main(argv: list[str] | None) -> int:
                              tuple(args.root or ["/app"]), attempts=args.attempts)
         rows = floor_rows(jobs, rubric)
         emit(floor_markdown(rows, rubric), args.out)
+        if args.suggest_rubric:
+            args.suggest_rubric.write_text(to_toml(diagnose(rows, rubric).suggested))
         leaks = [r for r in rows if r.adversary != "oracle" and args.max_free_credit is not None
                  and r.milestone > args.max_free_credit]
         if leaks:

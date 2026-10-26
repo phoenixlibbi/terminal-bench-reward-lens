@@ -61,7 +61,9 @@ def grade(results, rubric):
     milestones = []
     for m in rubric["milestones"]:
         passed, total, score = raw[m["name"]]
-        locked = any(raw[req][2] == 0 for req in m.get("requires", []))
+        any_of = m.get("requires_any", [])
+        locked = (any(raw[req][2] == 0 for req in m.get("requires", []))
+                  or (bool(any_of) and all(raw[req][2] == 0 for req in any_of)))
         milestones.append({"name": m["name"], "weight": m["weight"], "passed": passed, "total": total,
                            "score": 0.0 if locked else score, "locked": locked})
 

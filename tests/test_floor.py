@@ -165,3 +165,33 @@ def test_perturb_shuffles_record_fields_including_binary_labels(tmp_path):
     assert [r["label"] for r in out] != [i % 2 for i in range(8)]   # correspondence broken
     assert [r["prob"] for r in out] != [i / 10 for i in range(8)]
     assert all(r["const"] == 4 for r in out)                        # constant field rescaled
+
+
+def test_diagnose_classifies_tests_and_suggests_conditions(tmp_path):
+    from reward_lens.floor import diagnose
+    from reward_lens.rubric import Gate
+    rubric = Rubric("toy", (Milestone("format", 1.0, ("test_schema", "test_sane", "test_varied")),
+                            Milestone("values", 3.0, ("test_value_*",))),
+                    gates=(Gate("integrity", ("test_inputs",)),))
+    outcomes = {  # test -> (nop, zeros, perturb, oracle)
+        "test_inputs": ("passed",) * 4,
+        "test_schema": ("failed", "passed", "passed", "passed"),
+        "test_sane": ("failed", "passed", "failed", "passed"),
+        "test_varied": ("failed", "failed", "passed", "passed"),
+        "test_value_a": ("failed", "failed", "failed", "passed"),
+        "test_value_b": ("failed", "failed", "failed", "failed"),
+    }
+    jobs = tmp_path / "jobs"
+    for i, adversary in enumerate(("nop", "zeros", "perturb", "oracle")):
+        write_trial(jobs / adversary, f"t{i}", model="x", agent="oracle",
+                    tests={t: o[i] for t, o in outcomes.items()})
+
+    d = diagnose(floor_rows(jobs, rubric), rubric)
+    verdicts = {v.test: v.verdict.split(":")[0] for v in d.verdicts}
+    assert verdicts == {"test_inputs": "integrity gate", "test_schema": "format-only", "test_sane": "partial",
+                        "test_varied": "partial", "test_value_a": "strong", "test_value_b": "broken"}
+    assert d.weak_milestones == ["format"] and d.strong_milestones == ["values"]
+    assert d.suggested.milestones[0].requires_any == ("values",)
+    assert d.worst_before == pytest.approx(2 / 3 * 1 / 4) and d.worst_after == 0.0
+    md = floor_markdown(floor_rows(jobs, rubric), rubric)
+    assert "Weak-test report" in md and "requires_any = [\"values\"]" in md and "0.17 -> 0.00" in md
