@@ -159,7 +159,39 @@ With 10–16 runs per model the binary intervals overlap; the milestone interval
 | Recomputed binary reward vs. each run's original `reward.txt` | 54 / 54 runs agree |
 | `ReplayAgent`: recorded passing run, re-typed in a fresh container | reward 1.0, **16 / 16** tests in the same state as the recording |
 | `ReplayAgent`: recorded near-miss run (binary 0, R 0.92) | binary 0, R 0.917, **16 / 16** tests in the same state |
-| `LoopAgent` with a local `llama3.1:8b` via Ollama | runs the full observe → JSON action → tmux loop through Harbor; valid actions every turn, at zero API cost |
+| `LoopAgent` with a local `llama3.1:8b` via Ollama | full observe → JSON action → tmux loop through Harbor at zero API cost; 7 well-formed turns, then the task's 60-minute limit (recorded as a timeout, R = 0). The run exposed two harness issues, now fixed: the model typed into an unclosed command's `>` prompt, and one uncapped generation stalled |
+| Recorded runs replayed into a **hardened** verifier (4 runs) | **26 / 26** original test outcomes reproduced in every replay; the new value tests then graded the rebuilt final states with no model calls |
+
+### 5. Case study: hardening a verifier, step by step
+
+The floor test showed *that* non-solutions collect reward; the weak-test report shows *why*. On Task B, an all-zeros answer passed 16 of 26 tests:
+
+| Group of tests | Passed by the cheater because | Verdict |
+|---|---|---|
+| Files exist, columns, row count, IDs, metric keys, value types (8) | a wrong answer can be perfectly formatted | format-only |
+| "lower ≤ prediction ≤ upper", "lower ≥ 0" (3) | 0 ≤ 0 ≤ 0 is true: the check is vacuous for constant outputs | format-only |
+| Determinism (2) | the test read the same output file twice and compared it with itself: it cannot fail | format-only |
+| Integrity: inputs untouched, no leakage, no future data (3) | the cheater did not cheat on those | integrity gate (correctly passes) |
+| Only the 8 tests that compare values with the reference model failed it | | strong |
+
+Four levels of fixes, measured on the same task. "Real failed runs" are recorded agent runs that did not solve the task; for L3 they were replayed into the hardened task so the new tests could grade them.
+
+| Level | What changes | Cheaters (`zeros` / `perturb`) | Real failed runs | Passing run / oracle |
+|---|---|---|---|---|
+| L0: naive dense | every test worth the same | **0.62** / 0.62 | 0.69 | 1.00 |
+| L1: weights + integrity gate | format checks 5–20% of the weight | 0.16 / 0.16 | 0.20–0.27 | 1.00 |
+| L2: + conditional credit (`requires_any`, suggested by `floor`) | format credit only after some value check passes | **0.00** / 0.00 | **0.00**–0.27 | 1.00 |
+| L3: + value tests (`reward_lens.checks`) | strict intervals, non-degenerate outputs, correlation with the reference, metrics recomputed from the predictions | 0.14 / 0.16 | 0.25–0.32 | 1.00 |
+| **L2 + L3** | both | **0.00 / 0.00** | **0.25–0.32** | **1.00** |
+
+What the table shows:
+
+- **Reweighting (L1) is necessary but leaves a floor** of 0.16: format credit is still format credit.
+- **Conditional credit (L2) removes the floor, but can make the reward sparse again.** On this task two of the three replayed failed runs drop to 0, exactly like the cheaters: through this verifier their partial credit *was* format credit. (On Task A, L2 cost real agents almost nothing: 0.54 → 0.54 and 0.16 → 0.15, because their partial credit came from real value checks.)
+- **Value tests (L3) restore the signal.** The failed agents' outputs are honest: the metrics they report follow from the predictions they submitted, and their intervals are non-empty. The cheaters' outputs are not. With L2 + L3, every real failed run keeps 0.25–0.32, every cheater gets 0.00, and the passing run and the oracle keep 1.00.
+- **L4 is the loop:** run `floor` after every verifier change and gate it in CI with `--max-free-credit`. While doing exactly that, the floor test caught three bugs in this toolkit itself: a `perturb` adversary that left 0/1 labels unchanged, a fix-suggester that trusted milestones mixing strong and weak tests (its "fix" changed 0.16 to 0.16), and the vacuous determinism tests above.
+
+The lesson for anyone writing verifiers for RL: a test that a wrong answer can pass is not evidence, it is a reward-hacking surface. Measure it, weight it, condition it, and replace it with value checks.
 
 ## Install
 
