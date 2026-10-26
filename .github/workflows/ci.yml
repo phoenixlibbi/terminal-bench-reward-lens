@@ -9,14 +9,21 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        include:
+          - python-version: "3.11"   # core library; Harbor itself needs Python 3.12+
+            extras: dev
+          - python-version: "3.12"
+            extras: dev,harness
+          - python-version: "3.13"
+            extras: dev,harness
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e ".[dev,harness]"
+      - run: pip install -e ".[${{ matrix.extras }}]"
       - run: pytest -q
   grader-py38:
     # the in-container grader and corruptor must run on old task images
