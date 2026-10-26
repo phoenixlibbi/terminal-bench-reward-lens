@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "reward-lens"
+version = "0.0.1"
+description = "Grade the same terminal-agent runs under binary and dense milestone verifiers."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "Muhammad Labeeb Tariq" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+reward-lens = "reward_lens.cli:main"

@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+.pytest_cache/
+
+# OS
+.DS_Store
+
+# Run artifacts: never commit real trajectories or verifier logs
+jobs/
+runs/
+reports/
+private/
+**/model-run-logs/
+**/trajectory.json
+**/recording.cast
+**/ctrf.json
+!tests/fixtures/**/ctrf.json
