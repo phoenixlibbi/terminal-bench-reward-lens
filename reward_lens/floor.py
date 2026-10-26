@@ -74,8 +74,8 @@ class TestVerdict:
 @dataclass(frozen=True)
 class Diagnosis:
     verdicts: list[TestVerdict]
-    weak_milestones: list[str]  # milestones whose tests all pass for some non-solution
-    strong_milestones: list[str]  # milestones with at least one test that every non-solution fails
+    leaking_milestones: list[str]  # milestones that pay some non-solution (from their own tests)
+    safe_milestones: list[str]  # milestones that pay no non-solution: safe to condition credit on
     suggested: Rubric
     worst_before: float
     worst_after: float
@@ -153,18 +153,23 @@ def diagnose(rows: list[FloorRow], rubric: Rubric) -> Diagnosis:
         passed_by = {a: by_adv[a].pass_rate(test) for a in [*cheaters, *(["oracle"] if "oracle" in by_adv else [])]}
         verdicts.append(TestVerdict(test, owner, is_gate, passed_by, _verdict(passed_by, is_gate)))
 
-    milestone_tests = {m.name: [v for v in verdicts if v.owner == m.name] for m in rubric.milestones}
-    strong = [m for m, vs in milestone_tests.items() if any(v.verdict.startswith("strong") for v in vs)]
-    weak = [m for m, vs in milestone_tests.items()
-            if vs and all(v.verdict.startswith(("vacuous", "format-only", "partial")) for v in vs)]
+    # Judge milestones by behaviour, not by labels: a milestone that mixes strong and weak tests still pays
+    # a non-solution through its weak tests, so it is not safe to condition other credit on.
+    unconditioned = replace(rubric, milestones=tuple(replace(m, requires=(), requires_any=())
+                                                     for m in rubric.milestones))
+    cheat_runs = [res for a in cheaters for res in by_adv[a].results]
+    raw = [{s.name: s.score for s in milestone_reward(res, unconditioned).milestones} for res in cheat_runs]
+    leaking = [m.name for m in rubric.milestones if any(r[m.name] > 0 for r in raw)]
+    safe = [m.name for m in rubric.milestones if m.name not in leaking
+            and any(v.owner == m.name and v.verdict.startswith("strong") for v in verdicts)]
     suggested = replace(rubric, milestones=tuple(
-        replace(m, requires_any=tuple(dict.fromkeys([*m.requires_any, *strong]))) if m.name in weak and strong else m
+        replace(m, requires_any=tuple(dict.fromkeys([*m.requires_any, *safe]))) if m.name in leaking and safe else m
         for m in rubric.milestones))
 
     def worst(r: Rubric) -> float:
         return max((mean(milestone_reward(res, r).reward for res in by_adv[a].results)
                     for a in cheaters if by_adv[a].results), default=0.0)
-    return Diagnosis(verdicts, weak, strong, suggested, worst(rubric), worst(suggested))
+    return Diagnosis(verdicts, leaking, safe, suggested, worst(rubric), worst(suggested))
 
 
 def _verdict(passed_by: dict[str, float | None], is_gate: bool) -> str:
@@ -222,15 +227,16 @@ def diagnosis_markdown(d: Diagnosis) -> str:
     for v in d.verdicts:
         counts[v.verdict.split(":")[0]] = counts.get(v.verdict.split(":")[0], 0) + 1
     out += ["", "Summary: " + ", ".join(f"{n} {k}" for k, n in sorted(counts.items())), "", "## Suggested fixes", ""]
-    if d.weak_milestones and d.strong_milestones:
-        out.append(f"- Milestones whose tests all pass for some non-solution: {', '.join(d.weak_milestones)}. "
-                   f"Make their credit conditional on real progress:")
+    if d.leaking_milestones and d.safe_milestones:
+        out.append(f"- Milestones that pay a non-solution: {', '.join(d.leaking_milestones)}. "
+                   f"Make their credit conditional on milestones no non-solution scores on "
+                   f"({', '.join(d.safe_milestones)}):")
         for m in d.suggested.milestones:
-            if m.name in d.weak_milestones:
+            if m.name in d.leaking_milestones:
                 out.append(f"  - `{m.name}`: `requires_any = {list(m.requires_any)}`".replace("'", '"'))
         out.append(f"- Worst non-solution milestone R: **{d.worst_before:.2f} -> {d.worst_after:.2f}** "
                    "with these conditions (write the rubric with `--suggest-rubric`).")
-    elif d.weak_milestones:
+    elif d.leaking_milestones:
         out.append("- No milestone contains a test that every non-solution fails: the verifier cannot tell a correct "
                    "answer from a well-formatted wrong one. Add value checks (see `reward_lens.checks`).")
     else:

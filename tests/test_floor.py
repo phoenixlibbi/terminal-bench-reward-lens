@@ -190,8 +190,26 @@ def test_diagnose_classifies_tests_and_suggests_conditions(tmp_path):
     verdicts = {v.test: v.verdict.split(":")[0] for v in d.verdicts}
     assert verdicts == {"test_inputs": "integrity gate", "test_schema": "format-only", "test_sane": "partial",
                         "test_varied": "partial", "test_value_a": "strong", "test_value_b": "broken"}
-    assert d.weak_milestones == ["format"] and d.strong_milestones == ["values"]
+    assert d.leaking_milestones == ["format"] and d.safe_milestones == ["values"]
     assert d.suggested.milestones[0].requires_any == ("values",)
     assert d.worst_before == pytest.approx(2 / 3 * 1 / 4) and d.worst_after == 0.0
     md = floor_markdown(floor_rows(jobs, rubric), rubric)
     assert "Weak-test report" in md and "requires_any = [\"values\"]" in md and "0.17 -> 0.00" in md
+
+
+def test_mixed_milestone_is_not_safe_to_condition_on(tmp_path):
+    """A milestone with one strong test but other weak ones still pays cheaters, so it cannot unlock credit."""
+    from reward_lens.floor import diagnose
+    rubric = Rubric("toy", (Milestone("format", 1.0, ("test_schema",)),
+                            Milestone("sanity", 1.0, ("test_weak_sanity", "test_strict")),
+                            Milestone("values", 2.0, ("test_value",))))
+    outcomes = {"test_schema": ("failed", "passed", "passed", "passed"),
+                "test_weak_sanity": ("failed", "passed", "passed", "passed"),
+                "test_strict": ("failed", "failed", "failed", "passed"),
+                "test_value": ("failed", "failed", "failed", "passed")}
+    jobs = tmp_path / "jobs"
+    for i, adversary in enumerate(("nop", "zeros", "perturb", "oracle")):
+        write_trial(jobs / adversary, f"t{i}", model="x", agent="oracle", tests={t: o[i] for t, o in outcomes.items()})
+    d = diagnose(floor_rows(jobs, rubric), rubric)
+    assert d.leaking_milestones == ["format", "sanity"] and d.safe_milestones == ["values"]
+    assert d.worst_before > 0 and d.worst_after == 0.0
