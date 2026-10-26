@@ -126,15 +126,24 @@ def _run_grader(tmp_path, rubric, results, primary="milestone"):
     return json.loads((tmp_path / "logs" / "reward.json").read_text())
 
 
-def test_standalone_grader_matches_library_on_random_runs(tmp_path):
+CONDITIONAL = Rubric(
+    "toy",
+    milestones=(Milestone("deliverables", 0.2, ("test_outputs_exist",), requires=("model",)),
+                Milestone("model", 0.8, ("TestMetrics::*",))),
+    gates=(Gate("integrity", ("test_inputs_unchanged",)),),
+)
+
+
+@pytest.mark.parametrize("rubric", [RUBRIC, CONDITIONAL], ids=["plain", "conditional"])
+def test_standalone_grader_matches_library_on_random_runs(tmp_path, rubric):
     rng = random.Random(0)
     tests = ["test_outputs_exist", "test_inputs_unchanged", "TestMetrics::test_rmse", "TestMetrics::test_mae"]
     for i in range(40):
         results = {t: rng.choice(["passed", "passed", "failed", "skipped", "error"]) for t in tests if rng.random() > 0.1}
-        out = _run_grader(tmp_path / str(i), RUBRIC, results)
+        out = _run_grader(tmp_path / str(i), rubric, results)
         assert out["binary"] == binary_reward(results)
         assert out["naive_dense"] == pytest.approx(naive_dense_reward(results))
-        assert out["milestone"] == pytest.approx(milestone_reward(results, RUBRIC).reward)
+        assert out["milestone"] == pytest.approx(milestone_reward(results, rubric).reward)
         assert out["reward"] == out["milestone"]
 
 

@@ -17,7 +17,8 @@ class MilestoneScore:
     weight: float
     passed: int
     total: int
-    score: float
+    score: float  # effective score: 0 when locked
+    locked: bool = False  # a required milestone scored 0, so this one's credit is withheld
 
 
 @dataclass(frozen=True)
@@ -44,7 +45,7 @@ def milestone_reward(results: dict[str, str], rubric: Rubric) -> DenseResult:
         if owner is not None:
             by_owner.setdefault(owner, []).append(status in PASSING)
 
-    scores = []
+    raw = {}
     for m in rubric.milestones:
         outcomes = by_owner.get(m.name, [])  # a milestone with no reported tests (verifier crashed) scores 0
         passed = sum(outcomes)
@@ -54,7 +55,13 @@ def milestone_reward(results: dict[str, str], rubric: Rubric) -> DenseResult:
             score = float(passed == len(outcomes))
         else:
             score = passed / len(outcomes)
-        scores.append(MilestoneScore(m.name, m.weight, passed, len(outcomes), score))
+        raw[m.name] = (passed, len(outcomes), score)
+
+    scores = []
+    for m in rubric.milestones:
+        passed, total, score = raw[m.name]
+        locked = any(raw[req][2] == 0 for req in m.requires)
+        scores.append(MilestoneScore(m.name, m.weight, passed, total, 0.0 if locked else score, locked))
 
     for g in rubric.gates:
         outcomes = by_owner.get(g.name, [])

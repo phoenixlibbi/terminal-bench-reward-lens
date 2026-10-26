@@ -19,6 +19,7 @@ class Milestone:
     weight: float
     tests: tuple[str, ...]
     scoring: str = "fraction"  # "fraction": share of tests passed; "all": 1 only if every test passes
+    requires: tuple[str, ...] = ()  # credit only if each of these milestones scores > 0 on its own tests
 
 
 @dataclass(frozen=True)
@@ -65,8 +66,8 @@ def to_dict(rubric: Rubric) -> dict:
         "pass_threshold": rubric.pass_threshold,
         "near_miss": rubric.near_miss,
         "ignore": list(rubric.ignore),
-        "milestones": [{"name": m.name, "weight": m.weight, "tests": list(m.tests), "scoring": m.scoring}
-                       for m in rubric.milestones],
+        "milestones": [{"name": m.name, "weight": m.weight, "tests": list(m.tests), "scoring": m.scoring,
+                        "requires": list(m.requires)} for m in rubric.milestones],
         "gates": [{"name": g.name, "tests": list(g.tests)} for g in rubric.gates],
     }
 
@@ -75,7 +76,8 @@ def load_rubric(path: str | Path) -> Rubric:
     data = tomllib.loads(Path(path).read_text())
     task = data.get("task", {})
     milestones = tuple(
-        Milestone(m["name"], float(m["weight"]), tuple(m["tests"]), m.get("scoring", "fraction"))
+        Milestone(m["name"], float(m["weight"]), tuple(m["tests"]), m.get("scoring", "fraction"),
+                  tuple(m.get("requires", ())))
         for m in data.get("milestone", [])
     )
     gates = tuple(Gate(g["name"], tuple(g["tests"])) for g in data.get("gate", []))
@@ -104,5 +106,9 @@ def validate(rubric: Rubric) -> None:
             raise RubricError(f"milestone {m.name!r}: scoring must be one of {sorted(SCORING_MODES)}")
         if not m.tests:
             raise RubricError(f"milestone {m.name!r} lists no tests")
+        milestone_names = {other.name for other in rubric.milestones}
+        for req in m.requires:
+            if req == m.name or req not in milestone_names:
+                raise RubricError(f"milestone {m.name!r} requires {req!r}, which is not another milestone")
     if not 0 < rubric.near_miss <= rubric.pass_threshold <= 1:
         raise RubricError("need 0 < near_miss <= pass_threshold <= 1")

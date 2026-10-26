@@ -46,7 +46,7 @@ def grade(results, rubric):
         if name is not None:
             by_owner.setdefault(name, []).append(status in PASSING)
 
-    milestones = []
+    raw = {}
     for m in rubric["milestones"]:
         outcomes = by_owner.get(m["name"], [])
         passed = sum(outcomes)
@@ -56,8 +56,14 @@ def grade(results, rubric):
             score = float(passed == len(outcomes))
         else:
             score = passed / len(outcomes)
-        milestones.append({"name": m["name"], "weight": m["weight"], "passed": passed,
-                           "total": len(outcomes), "score": score})
+        raw[m["name"]] = (passed, len(outcomes), score)
+
+    milestones = []
+    for m in rubric["milestones"]:
+        passed, total, score = raw[m["name"]]
+        locked = any(raw[req][2] == 0 for req in m.get("requires", []))
+        milestones.append({"name": m["name"], "weight": m["weight"], "passed": passed, "total": total,
+                           "score": 0.0 if locked else score, "locked": locked})
 
     failed_gate = None
     for g in rubric.get("gates", []):

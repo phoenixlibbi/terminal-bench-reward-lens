@@ -147,3 +147,43 @@ def test_invalid_rubrics(tmp_path, body, message):
     path.write_text(body)
     with pytest.raises(RubricError, match=message):
         load_rubric(path)
+
+
+CONDITIONAL = Rubric(
+    "demo",
+    milestones=(
+        Milestone("hygiene", 1.0, ("TestSchema::*",), requires=("core",)),
+        Milestone("core", 3.0, ("test_rmse", "test_coverage")),
+    ),
+    gates=(Gate("integrity", ("test_inputs_unchanged",)),),
+)
+
+
+def test_requires_withholds_format_credit_from_runs_with_no_real_progress():
+    hygiene_only = {**ALL_PASS, "test_rmse": "failed", "test_coverage": "failed"}
+    result = milestone_reward(hygiene_only, CONDITIONAL)
+    assert result.reward == 0.0
+    hygiene = result.milestones[0]
+    assert (hygiene.passed, hygiene.total, hygiene.score, hygiene.locked) == (2, 2, 0.0, True)
+
+
+def test_requires_unlocks_once_the_required_milestone_scores():
+    partial = {**ALL_PASS, "test_coverage": "failed"}
+    result = milestone_reward(partial, CONDITIONAL)
+    assert not result.milestones[0].locked
+    assert result.reward == pytest.approx((1 * 1 + 3 * 0.5) / 4)
+
+
+@pytest.mark.parametrize("requires", [("hygiene",), ("missing",)])
+def test_requires_must_name_another_milestone(tmp_path, requires):
+    path = tmp_path / "rubric.toml"
+    path.write_text(f'[[milestone]]\nname="hygiene"\nweight=1\ntests=["t"]\nrequires={list(requires)!r}\n'.replace("'", '"'))
+    with pytest.raises(RubricError, match="not another milestone"):
+        load_rubric(path)
+
+
+def test_load_rubric_reads_requires(tmp_path):
+    path = tmp_path / "rubric.toml"
+    path.write_text('[[milestone]]\nname="a"\nweight=1\ntests=["t1"]\nrequires=["b"]\n'
+                    '[[milestone]]\nname="b"\nweight=1\ntests=["t2"]\n')
+    assert load_rubric(path).milestones[0].requires == ("b",)
