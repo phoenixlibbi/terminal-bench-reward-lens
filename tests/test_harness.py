@@ -231,3 +231,19 @@ def test_chat_client_sends_max_tokens(monkeypatch):
     assert client.complete([{"role": "user", "content": "hi"}]) == "{}"
     assert (sent["max_tokens"], sent["timeout"], sent["model"]) == (256, 30, "llama3.1:8b")
     assert (client.usage.prompt_tokens, client.usage.completion_tokens) == (3, 1)
+
+
+def test_run_task_uses_an_already_converted_task_as_is(tmp_path, monkeypatch):
+    from reward_lens import run as run_module
+    from reward_lens.convert import convert
+    from tests.test_convert import RUBRIC, TB_TEST_SH, TESTS_PY
+    task = tmp_path / "task"
+    (task / "tests").mkdir(parents=True)
+    (task / "tests" / "test.sh").write_text(TB_TEST_SH)
+    (task / "tests" / "test_state.py").write_text(TESTS_PY)
+    dense = convert(task, RUBRIC, tmp_path / "dense").out_dir
+    calls = []
+    monkeypatch.setattr(run_module.subprocess, "run", lambda cmd, check: calls.append(cmd))
+    run_module.run_task(dense, RUBRIC, "oracle", tmp_path / "work")
+    assert calls[0][calls[0].index("-p") + 1] == str(dense)
+    assert not (tmp_path / "work" / "task").exists()

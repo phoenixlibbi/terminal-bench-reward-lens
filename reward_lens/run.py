@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from reward_lens.convert import convert
+from reward_lens.convert import GRADER_MARKER, convert
 from reward_lens.ctrf import PASSING, load_ctrf
 from reward_lens.harbor import Trial, find_trials
 from reward_lens.rubric import Rubric
@@ -35,7 +35,10 @@ def harbor_binary() -> str:
 
 def run_task(task: Path, rubric: Rubric, agent: str, work: Path, *, model: str | None = None,
              agent_kwargs: dict[str, str] | None = None, attempts: int = 1, env_file: Path | None = None) -> Path:
-    converted = convert(task, rubric, work / "task", force=True).out_dir
+    if GRADER_MARKER in (task / "tests" / "test.sh").read_text():
+        converted = task.resolve()  # already a dense-reward task: run it as is
+    else:
+        converted = convert(task, rubric, work / "task", force=True).out_dir
     jobs = work / "jobs"
     cmd = [harbor_binary(), "run", "-p", str(converted), "-a", AGENTS.get(agent, agent),
            "-o", str(jobs), "-k", str(attempts), "-y"]
